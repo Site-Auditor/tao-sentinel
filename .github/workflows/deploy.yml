@@ -2,19 +2,27 @@
 # It SSHes into the server and pulls the latest GHCR image, then restarts the
 # compose stack.
 #
-# Required repository secrets (Settings -> Secrets and variables -> Actions):
+# Required repository SECRETS (Settings -> Secrets and variables -> Actions -> Secrets):
 #   DEPLOY_HOST    - hostname or IP of the production server
 #   DEPLOY_USER    - SSH user with permission to run docker compose
-#   DEPLOY_SSH_KEY - private SSH key (PEM) for that user
+#   DEPLOY_SSH_KEY - private SSH key (full PEM, including the BEGIN/END lines)
+#                    whose PUBLIC key is in that user's ~/.ssh/authorized_keys
+# Optional SECRETS:
+#   DEPLOY_PORT    - SSH port (defaults to 22)
+#
+# Optional repository VARIABLES (Settings -> Secrets and variables -> Actions -> Variables):
+#   DEPLOY_PATH    - directory on the server holding compose.yaml + sentinel.yaml
+#                    (defaults to /opt/tao-sentinel; set it to wherever you
+#                    cloned the repo, e.g. /root/bittensor/tao-sentinel)
 #
 # Server prerequisites:
-#   - The repo's compose.yaml and a real sentinel.yaml live at /opt/tao-sentinel.
-#   - The environment variable IMAGE is set to the GHCR image, e.g.
-#       IMAGE=ghcr.io/<owner>/tao-sentinel:latest
-#     (compose.yaml honors `image: ${IMAGE:-tao-sentinel:latest}` so the same
-#     file builds locally and pulls on the server).
-#   - TAOSTATS_API_KEY is exported in the deploy user's environment (empty ->
-#     deterministic mock mode).
+#   - The repo's compose.yaml and a real sentinel.yaml live at $DEPLOY_PATH.
+#   - Recommended: a .env file next to compose.yaml (docker compose reads it
+#     automatically; it is gitignored) holding:
+#       TAOSTATS_API_KEY=...   # empty/absent -> deterministic mock mode
+#     The IMAGE variable does NOT need to be on the server: this workflow
+#     exports IMAGE=ghcr.io/<this repo>:latest inline, which takes precedence
+#     over .env, so the pull always targets the image CI just published.
 name: Deploy
 
 on:
@@ -31,7 +39,11 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
           script: |
-            cd /opt/tao-sentinel
+            set -e
+            cd "${{ vars.DEPLOY_PATH || '/opt/tao-sentinel' }}"
+            export IMAGE="ghcr.io/${{ github.repository }}:latest"
             docker compose pull
             docker compose up -d
+            docker compose ps

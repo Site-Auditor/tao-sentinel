@@ -141,11 +141,16 @@ ghcr.io/<owner>/tao-sentinel:<git-sha>
 building locally by setting `IMAGE` before running Compose:
 
 ```bash
-# On the server, in /opt/tao-sentinel (which holds compose.yaml + sentinel.yaml).
+# On the server, in the project directory (wherever you cloned the repo —
+# it must hold compose.yaml + your sentinel.yaml).
 export IMAGE=ghcr.io/<owner>/tao-sentinel:latest
 docker compose pull
 docker compose up -d
 ```
+
+Tip: put `TAOSTATS_API_KEY=...` in a `.env` file next to `compose.yaml`
+(gitignored; docker compose reads it automatically) instead of exporting it —
+non-interactive SSH sessions don't load `.bashrc` exports.
 
 `compose.yaml` reads `image: ${IMAGE:-tao-sentinel:latest}`, so the same file
 builds locally (no `IMAGE` set -> `build: .` fallback) and pulls the GHCR image
@@ -155,16 +160,22 @@ on the server. The `Deploy` GitHub Actions workflow automates the
 ## 5. GitHub Actions secrets
 
 The CD workflow (`.github/workflows/deploy.yml`, `workflow_dispatch` only) SSHes
-to the server and runs `cd /opt/tao-sentinel && docker compose pull && docker
-compose up -d`. The server must already have the repo `compose.yaml` and a
-`sentinel.yaml` at `/opt/tao-sentinel`, with `IMAGE` set to the GHCR image.
+to the server, `cd`s into the project directory, exports
+`IMAGE=ghcr.io/<this repo>:latest` (so the server needs no `IMAGE` setup), and
+runs `docker compose pull && docker compose up -d`. The server must already
+have the repo `compose.yaml` and a `sentinel.yaml` in the project directory.
 
 | Secret           | Used by             | Purpose                                                       |
 | ---------------- | ------------------- | ------------------------------------------------------------- |
 | `DEPLOY_HOST`    | `deploy.yml`        | Hostname / IP of the deployment server.                       |
 | `DEPLOY_USER`    | `deploy.yml`        | SSH user on that server.                                      |
-| `DEPLOY_SSH_KEY` | `deploy.yml`        | Private SSH key authorized for `DEPLOY_USER`.                 |
+| `DEPLOY_SSH_KEY` | `deploy.yml`        | Private SSH key (full PEM) authorized for `DEPLOY_USER`.      |
+| `DEPLOY_PORT`    | `deploy.yml`        | Optional; SSH port if not 22.                                 |
 | `GITHUB_TOKEN`   | `ci.yml` (built-in) | Auto-provided; pushes the image to GHCR (`packages: write`).  |
+
+| Variable (not secret) | Used by      | Purpose                                                            |
+| --------------------- | ------------ | ------------------------------------------------------------------ |
+| `DEPLOY_PATH`         | `deploy.yml` | Project directory on the server (default `/opt/tao-sentinel`).     |
 
 CI (`.github/workflows/ci.yml`) needs no extra secrets: the `test` job runs
 pytest on the Python 3.10/3.12 matrix, and the `image` job (push to `main` only)
