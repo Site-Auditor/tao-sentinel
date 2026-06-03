@@ -14,6 +14,11 @@ self-hostable tool that keeps an eye on the things that move while you sleep:
 Everything runs **without an API key** in `--mock` mode, so you can try the whole tool
 offline against deterministic fixtures before you sign up for anything.
 
+**Live demo: [tao.insightfulbytes.com](https://tao.insightfulbytes.com)** — real mainnet
+data, refreshed against the Taostats free tier.
+
+![tao-sentinel dashboard — live mainnet subnet health grades](docs/dashboard.png)
+
 > Open-source reputation project. Issues and PRs welcome.
 
 ---
