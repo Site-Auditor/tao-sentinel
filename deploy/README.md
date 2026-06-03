@@ -127,43 +127,42 @@ Keep the plain-HTTP `tao-sentinel.conf` and let an upstream terminate TLS:
   to localhost only, e.g. `"127.0.0.1:8080:80"`, when the terminator runs on the
   same host).
 
-## 4. Pulling the GHCR image (server deployments)
+## 4. Server deployments: build from source (default) or pull from GHCR
 
-CI publishes the image to GitHub Container Registry on every push to `main`:
-
-```
-ghcr.io/<owner>/tao-sentinel:latest
-ghcr.io/<owner>/tao-sentinel:<git-sha>
-```
-
-`<owner>` is your GitHub org/user (CI derives it from
-`github.repository_owner`). On the server, use the published image instead of
-building locally by setting `IMAGE` before running Compose:
+The default deployment strategy is **git pull + build on the server** — the
+repo is public, so this needs no registry credentials at all:
 
 ```bash
-# On the server, in the project directory (wherever you cloned the repo —
-# it must hold compose.yaml + your sentinel.yaml).
-export IMAGE=ghcr.io/<owner>/tao-sentinel:latest
-docker compose pull
-docker compose up -d
+# On the server, in the project directory (a git clone of this repo holding
+# your sentinel.yaml).
+git pull --ff-only
+docker compose up -d --build
 ```
 
 Tip: put `TAOSTATS_API_KEY=...` in a `.env` file next to `compose.yaml`
 (gitignored; docker compose reads it automatically) instead of exporting it —
 non-interactive SSH sessions don't load `.bashrc` exports.
 
-`compose.yaml` reads `image: ${IMAGE:-tao-sentinel:latest}`, so the same file
-builds locally (no `IMAGE` set -> `build: .` fallback) and pulls the GHCR image
-on the server. The `Deploy` GitHub Actions workflow automates the
-`docker compose pull && docker compose up -d` step over SSH (see below).
+CI also publishes an image to GHCR on every push to `main`
+(`ghcr.io/<lowercased-owner>/tao-sentinel:latest` and `:<git-sha>`), but note
+it may be **private** depending on your org's package policy. To deploy by
+pulling instead of building, the server's Docker must be logged in to ghcr.io
+with a token that has `read:packages`; then:
+
+```bash
+export IMAGE=ghcr.io/<lowercased-owner>/tao-sentinel:latest
+docker compose pull && docker compose up -d
+```
+
+`compose.yaml` reads `image: ${IMAGE:-tao-sentinel:latest}` with a `build: .`
+fallback, so the same file serves both strategies.
 
 ## 5. GitHub Actions secrets
 
 The CD workflow (`.github/workflows/deploy.yml`, `workflow_dispatch` only) SSHes
-to the server, `cd`s into the project directory, exports
-`IMAGE=ghcr.io/<this repo>:latest` (so the server needs no `IMAGE` setup), and
-runs `docker compose pull && docker compose up -d`. The server must already
-have the repo `compose.yaml` and a `sentinel.yaml` in the project directory.
+to the server, `cd`s into the project directory (`DEPLOY_PATH`), and runs
+`git pull --ff-only && docker compose up -d --build`. The server must already
+have a clone of the repo with a `sentinel.yaml` in the project directory.
 
 | Secret           | Used by             | Purpose                                                       |
 | ---------------- | ------------------- | ------------------------------------------------------------- |

@@ -16,13 +16,18 @@
 #                    cloned the repo, e.g. /root/bittensor/tao-sentinel)
 #
 # Server prerequisites:
-#   - The repo's compose.yaml and a real sentinel.yaml live at $DEPLOY_PATH.
+#   - $DEPLOY_PATH is a git clone of this repo holding a real sentinel.yaml.
 #   - Recommended: a .env file next to compose.yaml (docker compose reads it
 #     automatically; it is gitignored) holding:
 #       TAOSTATS_API_KEY=...   # empty/absent -> deterministic mock mode
-#     The IMAGE variable does NOT need to be on the server: this workflow
-#     exports IMAGE=ghcr.io/<this repo>:latest inline, which takes precedence
-#     over .env, so the pull always targets the image CI just published.
+#
+# Deploy strategy: git pull + build ON the server (compose.yaml's `build: .`
+# fallback). The GHCR image CI publishes is PRIVATE (org policy disallows
+# public packages), so pulling it would force a registry token onto the
+# server; building from source needs no registry credentials at all. If the
+# org ever allows public packages, swap the script back to:
+#   export IMAGE="ghcr.io/<lowercased repo>:latest"
+#   docker compose pull && docker compose up -d
 name: Deploy
 
 on:
@@ -43,9 +48,6 @@ jobs:
           script: |
             set -e
             cd "${{ vars.DEPLOY_PATH || '/opt/tao-sentinel' }}"
-            # Docker requires lowercase image names; the repo owner may be
-            # mixed-case (e.g. Site-Auditor), so lowercase it portably.
-            export IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):latest"
-            docker compose pull
-            docker compose up -d
+            git pull --ff-only
+            docker compose up -d --build
             docker compose ps
