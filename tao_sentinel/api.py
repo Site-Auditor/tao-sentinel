@@ -309,9 +309,11 @@ def parse_subnet_info(item: dict) -> SubnetInfo:
     raw TAO emission is parsed here and normalized to a share-of-total
     percentage by :meth:`TaostatsClient.get_subnets` (per-item parsing cannot
     see the network total). The subnet/latest endpoint carries hyperparams
-    (``max_validators``, burn bounds) but typically not price/market cap —
-    those live in the pool endpoint and are merged in by the scanner.
-    ``min_burn`` (RAO) is used as the registration-cost proxy when present.
+    and live population counts (``active_validators``/``active_miners``,
+    verified against the production API June 2026) but no ``name`` and
+    typically no price/market cap — those live in the pool endpoint and are
+    merged in by the scanner. ``min_burn`` (RAO) is used as the
+    registration-cost proxy when present.
     """
     emission_pct = _to_float(item.get("emission_pct"))
     if emission_pct is None:
@@ -319,8 +321,28 @@ def parse_subnet_info(item: dict) -> SubnetInfo:
         emission_pct = rao_to_tao(item.get("emission"))
 
     registration_cost = rao_to_tao(item.get("registration_cost"))
-    if registration_cost is None:
+    if not registration_cost:
         registration_cost = rao_to_tao(item.get("min_burn"))
+
+    # Prefer the REAL validator population (live API: active_validators,
+    # sometimes plain validators); only fall back to the max_validators slot
+    # cap when no population field is present (e.g. older fixtures). The
+    # provenance travels with the model so the scanner knows whether the
+    # number is scoreable as a population.
+    from_population: Optional[bool] = None
+    n_validators = _to_int(item.get("active_validators"))
+    if n_validators is None:
+        n_validators = _to_int(item.get("validators"))
+    if n_validators is not None:
+        from_population = True
+    else:
+        n_validators = _to_int(item.get("max_validators"))
+        if n_validators is not None:
+            from_population = False
+
+    n_miners = _to_int(item.get("active_miners"))
+    if n_miners is None:
+        n_miners = _to_int(item.get("n_miners"))
 
     return SubnetInfo(
         netuid=_to_int(item.get("netuid")) or 0,
@@ -328,9 +350,10 @@ def parse_subnet_info(item: dict) -> SubnetInfo:
         emission_pct=emission_pct,
         price_tao=_to_float(item.get("price")),
         market_cap_tao=_amount_maybe_rao(item.get("market_cap")),
-        n_validators=_to_int(item.get("max_validators")),
-        n_miners=_to_int(item.get("n_miners")),
+        n_validators=n_validators,
+        n_miners=n_miners,
         registration_cost_tao=registration_cost,
+        validators_from_population=from_population,
     )
 
 

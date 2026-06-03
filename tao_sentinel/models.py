@@ -72,6 +72,12 @@ class SubnetInfo(BaseModel):
     n_validators: Optional[int] = None
     n_miners: Optional[int] = None
     registration_cost_tao: Optional[float] = None
+    #: Provenance of ``n_validators``: ``True`` when it is a real population
+    #: count (live API ``active_validators``/``validators``), ``False`` when it
+    #: fell back to the ``max_validators`` slot cap, ``None`` when unknown.
+    #: The scanner only scores the validator population in the all-subnets
+    #: scan when this is ``True``.
+    validators_from_population: Optional[bool] = None
 
 
 class ValidatorInfo(BaseModel):

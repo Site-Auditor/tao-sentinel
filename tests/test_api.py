@@ -641,3 +641,35 @@ def test_rate_limiter_concurrent_decrement_is_exact(fake_clock, fake_sleep):
     for _ in range(5):
         limiter.acquire()
     assert fake_sleep.calls == []
+
+
+def test_parse_subnet_info_live_api_shape_june_2026():
+    """Field mapping verified against the production API (June 2026).
+
+    The live subnet/latest row has no ``name``, carries the REAL populations
+    in ``active_validators``/``active_miners``, and ``max_validators`` is the
+    slot cap (must NOT win when a real count is present).
+    """
+    item = {
+        "netuid": 64,
+        "emission": "1148000000",          # RAO
+        "active_validators": 8,
+        "active_miners": 27,
+        "validators": 8,
+        "max_validators": 64,
+        "max_neurons": 64,
+        "registration_cost": 0,            # zero -> fall through to min_burn
+        "min_burn": "500000000",
+    }
+    info = parse_subnet_info(item)
+    assert info.name is None               # filled later by the pool merge
+    assert info.n_validators == 8          # real population, not the 64 cap
+    assert info.n_miners == 27
+    assert info.registration_cost_tao == pytest.approx(0.5)
+    assert info.emission_pct == pytest.approx(1.148)  # pre-normalization TAO
+
+
+def test_parse_subnet_info_falls_back_to_cap_without_population():
+    """Older/fixture rows without active_* still map from max_validators."""
+    info = parse_subnet_info({"netuid": 1, "max_validators": 64})
+    assert info.n_validators == 64

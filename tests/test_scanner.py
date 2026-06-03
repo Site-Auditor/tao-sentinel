@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from tao_sentinel.api import TaostatsError
-from tao_sentinel.models import HealthReport, SubnetInfo
+from tao_sentinel.models import HealthReport, SubnetInfo, ValidatorInfo
 from tao_sentinel.scanner import SubnetScanner, _grade
 
 
@@ -285,28 +285,46 @@ def test_neuron_component_uses_real_active_count_not_slot_cap(mock_client):
     assert report.metrics["n_validators"] == 64  # the cap, for reference
     assert report.metrics["n_validators_is_cap"] is False  # live data present
     active = report.metrics["n_active_validators"]
-    assert active is not None and active < 8  # netuid 1 truly has < 8 active
-    # The warning now fires on the REAL count (it never did under the cap).
-    assert any("active validators registered" in w for w in report.warnings)
+    assert active is not None and active < 12  # below full marks (12)
+    # The validator sub-score is driven by the REAL count: with 6 of the
+    # calibrated 12 needed for full marks, the sub-score is ~0.5, which a
+    # saturated slot cap (64) could never produce.
+    assert active / 12.0 < 0.99
 
 
-def test_low_validator_warning_fires_on_real_count_for_sparse_subnets(mock_client):
-    """The "only N validators" warning fires for every truly-sparse subnet.
+def test_low_validator_warning_calibrated_to_mainnet_sparsity(mock_client):
+    """The "only N validators" warning fires below the calibrated threshold.
 
-    Under the old slot-cap logic the warning never fired (every fixture caps at
-    64). netuid 1, 4 and 64 each have fewer than 8 ACTIVE validators, so the
-    warning must now fire for them, and not for netuid 8 (exactly 8).
+    Calibrated to the live mainnet distribution (median 10, p25 7): only a
+    genuinely sparse subnet (< 5 active validators) warns. The mock fixtures
+    (6-8 active) are typical-to-low but healthy, so they must NOT warn, while
+    a truly sparse validator set must.
     """
     scanner = SubnetScanner(mock_client)
-    for netuid in (1, 4, 64):
+    for netuid in (1, 4, 8, 64):
         report = scanner.scan(netuid)[0]
-        assert any(
+        assert not any(
             "active validators registered" in w for w in report.warnings
-        ), f"expected sparse-validator warning for netuid {netuid}"
-    report8 = scanner.scan(8)[0]
-    assert report8.metrics["n_active_validators"] == 8
-    assert not any(
-        "active validators registered" in w for w in report8.warnings
+        ), f"unexpected sparse-validator warning for typical netuid {netuid}"
+
+    class _SparseValidatorsClient:
+        def get_subnets(self):
+            return [SubnetInfo(netuid=9, name="ghost", emission_pct=1.0,
+                               price_tao=0.01, market_cap_tao=1000.0)]
+
+        def get_pools(self):
+            return []
+
+        def get_validators(self, netuid):
+            return [
+                ValidatorInfo(hotkey=f"5Sparse{i}", netuid=9,
+                              stake_tao=100.0, vtrust=0.9, active=True)
+                for i in range(3)
+            ]
+
+    sparse = SubnetScanner(_SparseValidatorsClient()).scan(9)[0]
+    assert any(
+        "3 active validators registered" in w for w in sparse.warnings
     )
 
 
@@ -324,7 +342,8 @@ def test_scan_all_skips_validator_subscore_and_does_not_saturate():
             return [
                 SubnetInfo(
                     netuid=1, name="a", emission_pct=10.0, price_tao=0.02,
-                    market_cap_tao=100000.0, n_validators=4096, n_miners=20,
+                    market_cap_tao=100000.0, n_validators=4096, n_miners=2,
+                    validators_from_population=False,
                 ),
             ]
 
@@ -336,10 +355,10 @@ def test_scan_all_skips_validator_subscore_and_does_not_saturate():
     assert report.metrics["n_validators"] == 4096
     assert report.metrics["n_validators_is_cap"] is True
     assert report.metrics["n_active_validators"] is None
-    # Emission + market are full; the neuron component is miner-only (20/200 =
-    # 0.1). Renormalized over emission(20)+neuron(25)+market(20)=65:
-    # (1*20 + 0.1*25 + 1*20)/65 * 100 ~= 65.4 -- nowhere near the ~96 it would
-    # be if the giant slot cap had saturated the validator sub-score.
+    # Emission + market are full; the neuron component is miner-only (2/16 =
+    # 0.125, calibrated June 2026). Renormalized over emission(20)+neuron(25)
+    # +market(20)=65: (1*20 + 0.125*25 + 1*20)/65 * 100 ~= 66.3 -- nowhere
+    # near the ~96 a saturated cap-driven validator sub-score would produce.
     assert report.score < 70.0
 
 
@@ -450,3 +469,56 @@ def test_merge_pool_data_propagates_programming_error(mock_client):
 
     with pytest.raises(AttributeError):
         SubnetScanner(_BuggyPoolClient(mock_client)).scan()
+
+
+def test_merge_pool_data_fills_missing_name_from_pool():
+    """Live subnet rows carry no name; the pool merge must supply it."""
+    from tao_sentinel.models import Pool, SubnetInfo
+    from tao_sentinel.scanner import SubnetScanner
+
+    scanner = SubnetScanner(client=None)  # pools passed explicitly, no client use
+    subnets = [SubnetInfo(netuid=64, emission_pct=1.0)]
+    pools = [Pool(netuid=64, name="chutes", price_tao=0.07, market_cap_tao=360919.0)]
+    merged = scanner._merge_pool_data(subnets, pools)
+    assert merged[0].name == "chutes"
+    assert merged[0].price_tao == pytest.approx(0.07)
+    assert merged[0].market_cap_tao == pytest.approx(360919.0)
+
+
+def test_scan_all_scores_validator_population_when_provenance_is_real():
+    """Live-API rows (validators_from_population=True) get a validator
+    sub-score in the all-subnets scan; cap-only rows still don't."""
+    from tao_sentinel.models import SubnetInfo
+    from tao_sentinel.scanner import SubnetScanner
+
+    scanner = SubnetScanner(client=None)
+
+    real = SubnetInfo(netuid=1, n_validators=12, n_miners=16,
+                      validators_from_population=True)
+    cap_only = SubnetInfo(netuid=2, n_validators=64, n_miners=16,
+                          validators_from_population=False)
+
+    m_real: dict = {}
+    m_cap: dict = {}
+    s_real = scanner._score_neurons(real, m_real, [])
+    s_cap = scanner._score_neurons(cap_only, m_cap, [])
+
+    assert s_real == pytest.approx(1.0)          # 12/12 and 16/16
+    assert m_real["n_validators_is_cap"] is False
+    assert s_cap == pytest.approx(1.0)           # miners-only (16/16)
+    assert m_cap["n_validators_is_cap"] is True  # cap recorded, not scored
+
+
+def test_neuron_targets_calibrated_to_mainnet_distribution():
+    """A typical live subnet (10 validators, 2 miners) must not bottom out."""
+    from tao_sentinel.models import SubnetInfo
+    from tao_sentinel.scanner import SubnetScanner
+
+    scanner = SubnetScanner(client=None)
+    typical = SubnetInfo(netuid=3, n_validators=10, n_miners=2,
+                         validators_from_population=True)
+    warnings: list = []
+    score = scanner._score_neurons(typical, {}, warnings)
+    # 10/12 validators (0.83) averaged with 2/16 miners (0.125) ~ 0.48
+    assert 0.4 < score < 0.6
+    assert any("2 active miners" in w for w in warnings)

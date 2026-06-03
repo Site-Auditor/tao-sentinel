@@ -130,11 +130,12 @@ class SubnetScanner:
         subnets: list[SubnetInfo],
         pools: Optional[list[Pool]] = None,
     ) -> list[SubnetInfo]:
-        """Fill missing price/market-cap on subnets from the dTAO pool list.
+        """Fill missing name/price/market-cap on subnets from the pool list.
 
-        The live ``subnet/latest`` endpoint carries hyperparams but not price
-        or market cap, so without this merge the market component of the
-        health score is silently skipped in live mode.
+        The live ``subnet/latest`` endpoint carries hyperparams but no subnet
+        ``name`` and no price/market cap (verified June 2026) — those live on
+        the dTAO pool endpoint, so without this merge the market component is
+        silently skipped and every subnet renders nameless in live mode.
 
         Args:
             subnets: The parsed subnet list to enrich.
@@ -160,11 +161,14 @@ class SubnetScanner:
         for s in subnets:
             pool = pool_by_netuid.get(s.netuid)
             if pool is None or (
-                s.price_tao is not None and s.market_cap_tao is not None
+                s.name is not None
+                and s.price_tao is not None
+                and s.market_cap_tao is not None
             ):
                 merged.append(s)
                 continue
             merged.append(s.model_copy(update={
+                "name": s.name if s.name is not None else pool.name,
                 "price_tao": s.price_tao if s.price_tao is not None
                 else pool.price_tao,
                 "market_cap_tao": s.market_cap_tao
@@ -372,51 +376,58 @@ class SubnetScanner:
     ) -> float:
         """Score validator and miner population health.
 
-        Rewards a healthy validator count (target ~64) and a non-trivial miner
-        population. Missing counts score neutrally.
+        Targets are calibrated to the LIVE mainnet population distribution
+        (June 2026: active validators median 10 / p75 12 / max 18; active
+        miners median 2 / p75 17): full marks at 12 validators and 16 miners.
+        Missing counts score neutrally.
 
-        ``subnet.n_validators`` is the slot CAP (``max_validators``), not the
-        number of validators actually registered, so scoring it directly would
-        peg the validator sub-score at full marks and the "only N validators"
-        warning would never fire for any subnet whose cap is >= 64 (the common
-        case). When the caller fetched the real validator set (single-netuid
-        scan) it passes ``n_active_validators`` -- the true active count -- which
-        is used for both the sub-score and the warning. In the all-subnets scan
-        no validator set is fetched, so the validator population is genuinely
-        unknown: the cap is recorded for reference but the validator sub-score
-        is OMITTED (it would otherwise be a meaningless saturated 1.0) and the
-        neuron component is scored from the miner population alone.
+        Validator population sources, in order of preference:
+
+        * ``n_active_validators`` -- the true count computed from the fetched
+          validator set (single-netuid scan); always scoreable.
+        * ``subnet.n_validators`` with ``validators_from_population=True`` --
+          the live API's ``active_validators`` field (all-subnets scan).
+        * ``subnet.n_validators`` with ``validators_from_population`` falsy --
+          the ``max_validators`` slot CAP. Not a population signal: it is
+          recorded for reference but the validator sub-score is OMITTED (it
+          would otherwise saturate to a meaningless 1.0) and the neuron
+          component is scored from the miner population alone.
 
         Returns:
             A fraction in ``[0, 1]``.
         """
-        cap = subnet.n_validators
         n_miners = subnet.n_miners
-        # Record the cap for reference but flag it as a cap, not a live count.
-        metrics["n_validators"] = cap
-        metrics["n_validators_is_cap"] = n_active_validators is None
+        metrics["n_validators"] = subnet.n_validators
+        metrics["n_validators_is_cap"] = (
+            n_active_validators is None
+            and not subnet.validators_from_population
+        )
         metrics["n_active_validators"] = n_active_validators
         metrics["n_miners"] = n_miners
 
+        # Calibrated to mainnet distribution, June 2026 (see docstring).
+        validators_full_marks = 12.0
+        validators_warn_below = 5
+        miners_full_marks = 16.0
+        miners_warn_below = 3
+
+        val_count = n_active_validators
+        if val_count is None and subnet.validators_from_population:
+            val_count = subnet.n_validators
+
         sub_scores: list[float] = []
 
-        if n_active_validators is not None:
-            # Real active-validator count (single-netuid scan). Target ~64.
-            val_sub = _clamp(n_active_validators / 64.0)
-            sub_scores.append(val_sub)
-            if n_active_validators < 8:
+        if val_count is not None:
+            sub_scores.append(_clamp(val_count / validators_full_marks))
+            if val_count < validators_warn_below:
                 warnings.append(
-                    f"Only {n_active_validators} active validators registered."
+                    f"Only {val_count} active validators registered."
                 )
-        # In the all-subnets scan we deliberately skip the validator sub-score:
-        # the only number available is the slot cap, which is not a population
-        # signal and would saturate to full marks for every subnet.
+        # Cap-only data: skip the validator sub-score (see docstring).
         if n_miners is not None:
-            # Healthy subnets carry well over 100 miners; full marks by ~200.
-            miner_sub = _clamp(n_miners / 200.0)
-            sub_scores.append(miner_sub)
-            if n_miners < 16:
-                warnings.append(f"Only {n_miners} miners registered.")
+            sub_scores.append(_clamp(n_miners / miners_full_marks))
+            if n_miners < miners_warn_below:
+                warnings.append(f"Only {n_miners} active miners.")
 
         if not sub_scores:
             return 0.5

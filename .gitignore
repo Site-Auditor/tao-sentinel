@@ -69,3 +69,4 @@ dmypy.json
 # tao-sentinel local config & state
 sentinel.yaml
 .tao-sentinel/
+compose.override.yaml
