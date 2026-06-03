@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tao-sentinel"
+version = "0.1.0"
+description = "A Bittensor watchtower built on the Taostats API: price/stake/validator/emission alerts, dTAO portfolio valuation, subnet health scanning, and a self-hosted dashboard."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "tao-sentinel contributors" }]
+keywords = ["bittensor", "tao", "dtao", "taostats", "subnet", "watchtower", "alerts", "portfolio"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "httpx",
+    "pydantic>=2",
+    "typer",
+    "rich",
+    "pyyaml",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/your-org/tao-sentinel"
+Repository = "https://github.com/your-org/tao-sentinel"
+Issues = "https://github.com/your-org/tao-sentinel/issues"
+
+[project.scripts]
+tao-sentinel = "tao_sentinel.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["tao_sentinel*"]
+
+[tool.setuptools.package-data]
+tao_sentinel = ["web/templates/*.html"]

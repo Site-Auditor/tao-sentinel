@@ -1,0 +1,37 @@
+# Deploy: manually triggered (workflow_dispatch) release to the production host.
+# It SSHes into the server and pulls the latest GHCR image, then restarts the
+# compose stack.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   DEPLOY_HOST    - hostname or IP of the production server
+#   DEPLOY_USER    - SSH user with permission to run docker compose
+#   DEPLOY_SSH_KEY - private SSH key (PEM) for that user
+#
+# Server prerequisites:
+#   - The repo's compose.yaml and a real sentinel.yaml live at /opt/tao-sentinel.
+#   - The environment variable IMAGE is set to the GHCR image, e.g.
+#       IMAGE=ghcr.io/<owner>/tao-sentinel:latest
+#     (compose.yaml honors `image: ${IMAGE:-tao-sentinel:latest}` so the same
+#     file builds locally and pulls on the server).
+#   - TAOSTATS_API_KEY is exported in the deploy user's environment (empty ->
+#     deterministic mock mode).
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: deploy to server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull and restart the compose stack over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd /opt/tao-sentinel
+            docker compose pull
+            docker compose up -d

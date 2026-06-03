@@ -1,0 +1,36 @@
+# Docker-ready example configuration for tao-sentinel.
+#
+# Copy this to ./sentinel.yaml at the repo root before `docker compose up`:
+#     cp deploy/sentinel.example.yaml sentinel.yaml
+# It is mounted read-only into both the dashboard and watcher containers at
+# /config/sentinel.yaml. Paths here are container paths.
+
+# Where the watch engine persists state between polls. /data is the named
+# `sentinel-state` volume shared by the watcher and dashboard services.
+state_path: /data/state.json
+
+# Taostats API key. The "env:VARNAME" form reads the value from the named
+# environment variable at load time; compose passes TAOSTATS_API_KEY through
+# from the host. If it is empty/unset, tao-sentinel falls back to its
+# deterministic mock client, so the stack runs with no secrets at all.
+api_key: env:TAOSTATS_API_KEY
+
+# How often (in seconds) the `watch` service polls for changes. 3600 (hourly)
+# stays comfortably within the Taostats free-tier (~10k calls/month) budget.
+poll_interval_seconds: 3600
+
+# Watches evaluated each poll. Supported types: price_change, stake_change,
+# validator_dereg, emission_shift.
+watches:
+  # Alert when subnet 64's alpha pool price moves more than 10%.
+  - type: price_change
+    netuid: 64
+    threshold_pct: 10.0
+
+# Optional Telegram notifications. Uncomment and fill in to enable.
+# telegram:
+#   bot_token: "123456:ABC-your-bot-token"
+#   chat_id: "123456789"
+
+# Optional generic webhook. Alerts are POSTed as JSON. Uncomment to enable.
+# webhook_url: "https://example.com/hooks/tao-sentinel"
