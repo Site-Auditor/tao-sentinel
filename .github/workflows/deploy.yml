@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Pull and restart the compose stack over SSH
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
@@ -43,7 +43,9 @@ jobs:
           script: |
             set -e
             cd "${{ vars.DEPLOY_PATH || '/opt/tao-sentinel' }}"
-            export IMAGE="ghcr.io/${{ github.repository }}:latest"
+            # Docker requires lowercase image names; the repo owner may be
+            # mixed-case (e.g. Site-Auditor), so lowercase it portably.
+            export IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]'):latest"
             docker compose pull
             docker compose up -d
             docker compose ps
