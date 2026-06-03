@@ -14,7 +14,7 @@ import logging
 import os
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,14 @@ from tao_sentinel.alerts.notify import Notifier
 from tao_sentinel.alerts.rules import RULES
 
 logger = logging.getLogger(__name__)
+
+#: TTL for the in-memory per-netuid alpha-price history cache used by the
+#: ``price_trend`` watch. The contract pins this at 6 hours: history is slow-
+#: moving and the free-tier API budget cannot absorb a fetch every tick.
+_HISTORY_TTL_SECONDS = 6 * 3600
+
+#: Trailing window (hours) requested for ``price_trend`` history fetches.
+_HISTORY_HOURS = 24
 
 
 class WatchEngine:
@@ -42,29 +50,53 @@ class WatchEngine:
         client: Any,
         config: Config,
         notifiers: list[Notifier] | None = None,
+        clock=time.monotonic,
     ) -> None:
-        """Store the client, config and notifiers."""
+        """Store the client, config and notifiers.
+
+        Args:
+            clock: Monotonic time source (seconds) used to age the in-memory
+                history cache; injectable so tests can advance time without
+                sleeping.
+        """
         self.client = client
         self.config = config
         self.notifiers: list[Notifier] = list(notifiers or [])
+        self._clock = clock
+        # In-memory 6h-TTL history cache for ``price_trend``: maps netuid ->
+        # (fetched_at_monotonic, [PricePoint, ...]). Not persisted; the last
+        # fetched series itself rides along in the snapshot so a restart still
+        # has a baseline to evaluate against on the next tick.
+        self._history_cache: dict[int, tuple[float, list[Any]]] = {}
 
     # ------------------------------------------------------------------ #
     # Snapshotting
     # ------------------------------------------------------------------ #
-    def _needed_data(self) -> tuple[bool, set[int], set[str], set[int]]:
+    def _needed_data(
+        self,
+    ) -> tuple[bool, bool, set[str], set[int], bool, set[int]]:
         """Inspect active watches and report what data must be fetched.
 
-        Returns a tuple of:
-            (need_pools, subnet_netuids, coldkeys, validator_netuids)
+        Returns a tuple of::
+
+            (need_pools, need_subnets, coldkeys, validator_netuids,
+             need_tao_price, history_netuids)
 
         Being precise here keeps us rate-frugal: pools/subnets are fetched at
         most once each, stakes only for watched coldkeys, validators only for
-        watched netuids.
+        watched netuids, the TAO/USD price only when a ``tao_price`` watch is
+        active, and per-netuid history only for ``price_trend`` watches (and
+        even then through a 6h cache, so most ticks spend zero history calls).
+        ``market_cap`` and ``new_subnet`` reuse the pools source;
+        ``registration_cost`` reuses the subnets source - none of those add
+        extra calls.
         """
         need_pools = False
         need_subnets = False
+        need_tao_price = False
         coldkeys: set[str] = set()
         validator_netuids: set[int] = set()
+        history_netuids: set[int] = set()
 
         for watch in self.config.watches:
             if watch.type == "price_change":
@@ -77,13 +109,31 @@ class WatchEngine:
                     validator_netuids.add(watch.netuid)
             elif watch.type == "emission_shift":
                 need_subnets = True
+            elif watch.type == "tao_price":
+                need_tao_price = True
+            elif watch.type == "market_cap":
+                need_pools = True
+            elif watch.type == "new_subnet":
+                need_pools = True
+            elif watch.type == "registration_cost":
+                need_subnets = True
+            elif watch.type == "price_trend":
+                need_pools = True  # for the subnet name on the alert
+                if watch.netuid is not None:
+                    history_netuids.add(watch.netuid)
             else:
                 logger.warning("Unknown watch type %r; skipping", watch.type)
 
-        # ``subnet_netuids`` is represented by the boolean need_subnets because
-        # the subnets endpoint returns all subnets in one call. We surface it as
-        # an empty set sentinel and a bool to keep the snapshot logic simple.
-        return need_pools, need_subnets, coldkeys, validator_netuids
+        # ``need_subnets`` is a boolean because the subnets endpoint returns all
+        # subnets in one (paginated) call; same for pools and the TAO price.
+        return (
+            need_pools,
+            need_subnets,
+            coldkeys,
+            validator_netuids,
+            need_tao_price,
+            history_netuids,
+        )
 
     def take_snapshot(self, prev_snapshot: dict | None = None) -> dict:
         """Fetch exactly the data the active watches require.
@@ -104,7 +154,14 @@ class WatchEngine:
             prev_snapshot: The previous snapshot (deserialized), used to carry
                 forward data for any source whose fetch fails this tick.
         """
-        need_pools, need_subnets, coldkeys, validator_netuids = self._needed_data()
+        (
+            need_pools,
+            need_subnets,
+            coldkeys,
+            validator_netuids,
+            need_tao_price,
+            history_netuids,
+        ) = self._needed_data()
         prev_snapshot = prev_snapshot or {}
 
         pools: dict[int, Pool] = {}
@@ -161,13 +218,99 @@ class WatchEngine:
                 if netuid in prev_validators:
                     validators[netuid] = list(prev_validators[netuid])
 
-        return {
+        snapshot: dict[str, Any] = {
             "pools": pools,
             "subnets": subnets,
             "stakes": stakes,
             "validators": validators,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+        # ---- TAO/USD spot (1 call/tick, only when a tao_price watch exists) --
+        if need_tao_price:
+            tao_price = self._fetch_tao_price()
+            if tao_price is None:
+                # Carry forward the prior price so a flaky fetch is read as
+                # "no change" rather than dropping the baseline.
+                prev_price = prev_snapshot.get("tao_price")
+                if prev_price is not None:
+                    snapshot["tao_price"] = prev_price
+            else:
+                snapshot["tao_price"] = tao_price
+
+        # ---- Per-netuid alpha-price history (6h-cached; price_trend only) ----
+        if history_netuids:
+            prev_history = prev_snapshot.get("history", {}) or {}
+            history: dict[str, list[list]] = {}
+            for netuid in history_netuids:
+                series = self._history_for(netuid)
+                if series is None:
+                    # Fetch failed and nothing cached: carry forward the prior
+                    # series so the trend rule still has a baseline.
+                    carried = prev_history.get(str(netuid)) or prev_history.get(
+                        netuid
+                    )
+                    if carried:
+                        history[str(netuid)] = [list(p) for p in carried]
+                    continue
+                history[str(netuid)] = [[p.timestamp, p.value] for p in series]
+            if history:
+                snapshot["history"] = history
+
+        return snapshot
+
+    def _fetch_tao_price(self) -> float | None:
+        """Fetch the latest TAO/USD spot via the price-history endpoint.
+
+        Uses the most recent point of a short history series (1 call). Returns
+        ``None`` on any failure so the caller can carry forward the prior price
+        rather than dropping the baseline.
+        """
+        try:
+            series = self.client.get_tao_price_history(hours=_HISTORY_HOURS)
+        except Exception as exc:
+            logger.warning("Failed to fetch TAO price: %s; carrying forward.", exc)
+            return None
+        if not series:
+            return None
+        # Series is chronological ascending; the last point is the latest spot.
+        return float(series[-1].value)
+
+    def _history_for(self, netuid: int) -> list[Any] | None:
+        """Return the cached/fetched alpha-price history for ``netuid``.
+
+        Honors a 6h in-memory TTL keyed on the injected monotonic clock so the
+        free-tier budget is not blown by per-tick fetches. The cache is
+        LRU-capped at 16 entries (the most recently used netuids survive). On a
+        fetch failure with no usable cache entry, returns ``None`` so the caller
+        can carry forward a prior series.
+        """
+        now = self._clock()
+        cached = self._history_cache.get(netuid)
+        if cached is not None and (now - cached[0]) < _HISTORY_TTL_SECONDS:
+            # Refresh LRU ordering on a hit.
+            self._history_cache[netuid] = self._history_cache.pop(netuid)
+            return cached[1]
+
+        try:
+            series = list(
+                self.client.get_pool_history(netuid, hours=_HISTORY_HOURS)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch history for netuid %s: %s; using cache/baseline.",
+                netuid,
+                exc,
+            )
+            # Serve a stale cache entry if we have one rather than nothing.
+            return cached[1] if cached is not None else None
+
+        self._history_cache[netuid] = (now, series)
+        # LRU cap at 16: evict the oldest-inserted entries beyond the cap.
+        while len(self._history_cache) > 16:
+            oldest = next(iter(self._history_cache))
+            del self._history_cache[oldest]
+        return series
 
     # ------------------------------------------------------------------ #
     # Evaluation
@@ -231,6 +374,9 @@ class WatchEngine:
             "snapshot": self._serialize_snapshot(now_snapshot),
             "last_run": now_snapshot["timestamp"],
             "last_alerts": [a.model_dump() for a in alerts],
+            # Carry the cooldown ledger forward untouched here; ``dispatch``
+            # prunes/updates it when alerts are actually sent.
+            "last_alerted": dict(prev_state.get("last_alerted", {})),
         }
         return alerts, new_state
 
@@ -240,7 +386,7 @@ class WatchEngine:
     @staticmethod
     def _serialize_snapshot(snapshot: dict) -> dict:
         """Convert a snapshot of pydantic models into JSON-safe primitives."""
-        return {
+        out: dict[str, Any] = {
             "pools": {
                 str(k): v.model_dump() for k, v in snapshot.get("pools", {}).items()
             },
@@ -257,6 +403,15 @@ class WatchEngine:
             },
             "timestamp": snapshot.get("timestamp"),
         }
+        # Optional v0.2.0 keys; already JSON-safe (a float and a list-of-pairs).
+        if "tao_price" in snapshot:
+            out["tao_price"] = snapshot["tao_price"]
+        if "history" in snapshot:
+            out["history"] = {
+                str(k): [[p[0], p[1]] for p in v]
+                for k, v in snapshot["history"].items()
+            }
+        return out
 
     @staticmethod
     def _deserialize_snapshot(raw: dict | None) -> dict | None:
@@ -267,7 +422,7 @@ class WatchEngine:
         """
         if not raw:
             return None
-        return {
+        snapshot: dict[str, Any] = {
             "pools": {
                 int(k): Pool(**v) for k, v in (raw.get("pools") or {}).items()
             },
@@ -284,6 +439,16 @@ class WatchEngine:
             },
             "timestamp": raw.get("timestamp"),
         }
+        # Optional v0.2.0 keys: history is kept keyed by the stringified netuid
+        # (the rules accept either form) and as plain ``[ts, value]`` pairs.
+        if raw.get("tao_price") is not None:
+            snapshot["tao_price"] = raw["tao_price"]
+        if raw.get("history"):
+            snapshot["history"] = {
+                str(k): [[p[0], p[1]] for p in v]
+                for k, v in raw["history"].items()
+            }
+        return snapshot
 
     # ------------------------------------------------------------------ #
     # State persistence
@@ -366,26 +531,121 @@ class WatchEngine:
     # ------------------------------------------------------------------ #
     # Dispatch + loop
     # ------------------------------------------------------------------ #
-    def dispatch(self, alerts: list[Alert]) -> None:
-        """Send each alert to every notifier.
+    #: Severity rank for escalation comparisons (higher == more severe).
+    _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+    @staticmethod
+    def _cooldown_key(alert: Alert) -> str:
+        """Build the dedup key for ``alert``: ``rule_type|netuid|coldkey|hotkey``.
+
+        ``netuid`` comes off the alert; ``coldkey``/``hotkey`` are not carried on
+        the :class:`Alert` model, so they are absent (empty) here - the key is
+        still stable per (rule_type, netuid), which is the natural granularity
+        for the subnet- and price-oriented rules. Missing components render as
+        empty strings so the key shape is constant.
+        """
+        netuid = "" if alert.netuid is None else str(alert.netuid)
+        return f"{alert.rule_type}|{netuid}||"
+
+    def _apply_cooldown(
+        self, alerts: list[Alert], last_alerted: dict
+    ) -> list[Alert]:
+        """Filter ``alerts`` against the cooldown ledger, updating it in place.
+
+        An alert is suppressed when an identical key fired within
+        ``config.alert_cooldown_minutes`` UNLESS its severity escalated above
+        the severity recorded for that key (info < warning < critical). A
+        cooldown of ``0`` disables suppression entirely. Surviving alerts have
+        their ``(timestamp, severity)`` recorded under their key so the next
+        tick can compare against them; the ledger persists in the state file.
+        """
+        cooldown_minutes = getattr(self.config, "alert_cooldown_minutes", 60)
+        if cooldown_minutes <= 0:
+            # Disabled: everything passes, but still record for downstream view.
+            for alert in alerts:
+                last_alerted[self._cooldown_key(alert)] = {
+                    "timestamp": alert.timestamp,
+                    "severity": alert.severity,
+                }
+            return list(alerts)
+
+        window = timedelta(minutes=cooldown_minutes)
+        now = datetime.now(timezone.utc)
+        kept: list[Alert] = []
+        # Keys first written during THIS batch must not suppress later alerts in
+        # the same batch: distinct simultaneous subjects (e.g. two validators
+        # deregistering on one subnet in one tick) collapse onto the same
+        # (rule_type, netuid) key because coldkey/hotkey are absent from the
+        # Alert model. Without this guard the first such alert would silently
+        # suppress every other genuinely-distinct same-tick event. Cross-tick
+        # repeats still dedup because those priors come from ``last_alerted``.
+        seen_this_batch: set[str] = set()
+        for alert in alerts:
+            key = self._cooldown_key(alert)
+            prior = last_alerted.get(key)
+            suppressed = False
+            if prior is not None and key not in seen_this_batch:
+                last_ts = self._parse_iso(prior.get("timestamp"))
+                within_window = last_ts is not None and (now - last_ts) < window
+                prior_rank = self._SEVERITY_RANK.get(prior.get("severity"), 0)
+                this_rank = self._SEVERITY_RANK.get(alert.severity, 0)
+                escalated = this_rank > prior_rank
+                if within_window and not escalated:
+                    suppressed = True
+            if suppressed:
+                logger.debug("Cooldown suppressed alert %r (key=%s)", alert.title, key)
+                continue
+            kept.append(alert)
+            seen_this_batch.add(key)
+            last_alerted[key] = {
+                "timestamp": alert.timestamp,
+                "severity": alert.severity,
+            }
+        return kept
+
+    @staticmethod
+    def _parse_iso(value: str | None) -> datetime | None:
+        """Parse an ISO-8601 timestamp into an aware UTC datetime, or ``None``."""
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    def dispatch(self, alerts: list[Alert], last_alerted: dict | None = None) -> None:
+        """Dedup via cooldown, then deliver the survivors to every notifier.
+
+        First applies cooldown suppression (mutating ``last_alerted`` in place if
+        provided, so the caller can persist the updated ledger). Then each
+        notifier receives the surviving batch via :meth:`Notifier.send_many` -
+        exactly once - so a notifier that batches (Telegram digest) sends a
+        single combined message while per-alert channels (webhook) still POST
+        one body each.
 
         Notifiers are documented to never raise, but the :class:`Notifier` ABC
         is public for extension and a user-supplied (or buggy built-in) channel
-        may still raise. Each ``send`` is guarded so one bad channel can never
-        drop other channels or remaining alerts: a raising notifier is logged
-        and skipped, and dispatch continues.
+        may still raise. Each ``send_many`` is guarded so one bad channel can
+        never drop the others.
         """
-        for alert in alerts:
-            for notifier in self.notifiers:
-                try:
-                    notifier.send(alert)
-                except Exception as exc:
-                    logger.warning(
-                        "Notifier %s raised while sending %r: %s",
-                        type(notifier).__name__,
-                        alert.title,
-                        exc,
-                    )
+        if last_alerted is None:
+            last_alerted = {}
+        to_send = self._apply_cooldown(alerts, last_alerted)
+        if not to_send:
+            return
+        for notifier in self.notifiers:
+            try:
+                notifier.send_many(to_send)
+            except Exception as exc:
+                logger.warning(
+                    "Notifier %s raised while sending a batch of %d alert(s): %s",
+                    type(notifier).__name__,
+                    len(to_send),
+                    exc,
+                )
 
     def run_forever(self, sleep=time.sleep) -> None:
         """Poll on ``config.poll_interval_seconds``, dispatching alerts forever.
@@ -407,10 +667,14 @@ class WatchEngine:
         while True:
             try:
                 alerts, state = self.run_once(state)
-                self.save_state(state)
                 if alerts:
                     logger.info("Dispatching %d alert(s)", len(alerts))
-                    self.dispatch(alerts)
+                    # ``dispatch`` mutates the cooldown ledger in place; persist
+                    # the updated ledger AFTER dispatch so a suppressed-then-
+                    # escalated alert is tracked across restarts.
+                    last_alerted = state.setdefault("last_alerted", {})
+                    self.dispatch(alerts, last_alerted)
+                self.save_state(state)
             except KeyboardInterrupt:  # pragma: no cover - interactive only
                 logger.info("Watch loop interrupted; exiting.")
                 return

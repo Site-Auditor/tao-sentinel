@@ -19,6 +19,7 @@ import pytest
 
 from tao_sentinel.api import (
     ENDPOINTS,
+    MAX_HISTORY_POINTS,
     MAX_PAGES,
     MAX_RETRIES,
     MockTaostatsClient,
@@ -27,16 +28,25 @@ from tao_sentinel.api import (
     TaostatsClient,
     TaostatsError,
     _amount_maybe_rao,
+    downsample_points,
     make_client,
     normalize_emission_shares,
     parse_pool,
+    parse_price_point,
     parse_stake_position,
     parse_subnet_info,
     parse_tao_price,
     parse_validator_info,
     rao_to_tao,
 )
-from tao_sentinel.models import Pool, StakePosition, SubnetInfo, TaoPrice, ValidatorInfo
+from tao_sentinel.models import (
+    Pool,
+    PricePoint,
+    StakePosition,
+    SubnetInfo,
+    TaoPrice,
+    ValidatorInfo,
+)
 
 
 def _make_client(handler, *, rate_limiter=None, retry_sleep=None):
@@ -117,6 +127,8 @@ REQUIRED_ENDPOINT_KEYS = {
     "stake_balances",
     "subnets",
     "validators",
+    "tao_price_history",
+    "pool_history",
 }
 
 
@@ -673,3 +685,170 @@ def test_parse_subnet_info_falls_back_to_cap_without_population():
     """Older/fixture rows without active_* still map from max_validators."""
     info = parse_subnet_info({"netuid": 1, "max_validators": 64})
     assert info.n_validators == 64
+
+
+# --------------------------------------------------------------------------- #
+# C1 / C9: history parsing, units, and downsampling
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_price_point_reads_value_and_timestamp():
+    """A TAO price-history row parses ``price`` (USD) + ``created_at`` verbatim."""
+    point = parse_price_point(
+        {"created_at": "2026-06-03T22:00:00Z", "price": "229.881483505172"},
+        value_key="price",
+        time_key="created_at",
+    )
+    assert isinstance(point, PricePoint)
+    assert point.value == pytest.approx(229.881483505172)
+    assert point.timestamp == "2026-06-03T22:00:00Z"
+
+
+def test_parse_price_point_pool_price_is_tao_not_rao():
+    """Pool ``price`` (alpha-in-TAO decimal) is NOT divided by 1e9."""
+    point = parse_price_point(
+        {"timestamp": "2026-06-03T03:19:12Z", "price": "0.009833819"},
+        value_key="price",
+        time_key="timestamp",
+    )
+    assert point is not None
+    assert point.value == pytest.approx(0.009833819)  # unscaled, not /1e9
+    assert point.timestamp == "2026-06-03T03:19:12Z"
+
+
+def test_parse_price_point_unparseable_value_returns_none():
+    """A junk/missing value yields ``None`` so callers can skip the row."""
+    assert parse_price_point({"price": ""}, value_key="price", time_key="created_at") is None
+    assert parse_price_point({}, value_key="price", time_key="created_at") is None
+
+
+def test_downsample_points_noop_within_cap():
+    """A series at or under the cap is returned unchanged."""
+    pts = [PricePoint(timestamp=f"t{i}", value=float(i)) for i in range(10)]
+    out = downsample_points(pts, max_points=48)
+    assert out == pts
+
+
+def test_downsample_points_caps_and_keeps_last():
+    """A long series is reduced to the cap and always retains the final point."""
+    pts = [PricePoint(timestamp=f"t{i}", value=float(i)) for i in range(500)]
+    out = downsample_points(pts, max_points=MAX_HISTORY_POINTS)
+    assert len(out) <= MAX_HISTORY_POINTS
+    assert out[0].value == pytest.approx(0.0)  # oldest preserved
+    assert out[-1].value == pytest.approx(499.0)  # newest never dropped
+    # Order preserved (strictly ascending values here).
+    assert [p.value for p in out] == sorted(p.value for p in out)
+
+
+def test_downsample_points_single_point_target():
+    """max_points=1 keeps only the most recent point."""
+    pts = [PricePoint(timestamp=f"t{i}", value=float(i)) for i in range(5)]
+    out = downsample_points(pts, max_points=1)
+    assert out == [pts[-1]]
+
+
+# --------------------------------------------------------------------------- #
+# C1 / C9: live-client history methods (MockTransport, one call, ascending)
+# --------------------------------------------------------------------------- #
+
+
+def test_get_tao_price_history_parses_and_orders_ascending():
+    """One descending page is parsed, reversed to ascending, capped at 48."""
+    # API returns newest-first; build 120 candles descending in time.
+    data = [
+        {"created_at": f"2026-06-03T{i:02d}:00:00Z", "price": str(200.0 + i)}
+        for i in range(120)
+    ]  # i=0 is newest in this fake (value 200), i=119 oldest (value 319)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        assert "asset=tao" in str(request.url)
+        return httpx.Response(200, json={"pagination": {"next_page": None}, "data": data})
+
+    client = _make_client(handler)
+    points = client.get_tao_price_history(hours=24)
+    assert calls["n"] == 1  # exactly one API call (budget)
+    assert len(points) <= MAX_HISTORY_POINTS
+    # Reversed to chronological ascending: first emitted is the oldest row.
+    assert points[0].value == pytest.approx(319.0)
+    assert points[-1].value == pytest.approx(200.0)
+
+
+def test_get_pool_history_uses_netuid_and_hourly_frequency():
+    """get_pool_history sends netuid + by_hour, parses price as TAO, one call."""
+    data = [
+        {"timestamp": f"2026-06-03T{i:02d}:00:00Z", "price": str(0.01 + i / 10000.0)}
+        for i in range(10)
+    ]
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"pagination": {"next_page": None}, "data": data})
+
+    client = _make_client(handler)
+    points = client.get_pool_history(64, hours=24)
+    assert "netuid=64" in seen["url"]
+    assert "frequency=by_hour" in seen["url"]
+    assert len(points) == 10
+    # Endpoint returns newest-first; method reverses to ascending. The fake
+    # rows are emitted index-ascending, so after reversal index 9 comes first.
+    # Values are NOT divided by 1e9 (alpha price already in TAO).
+    assert points[0].value == pytest.approx(0.01 + 9 / 10000.0)
+    assert points[-1].value == pytest.approx(0.01)
+
+
+def test_history_endpoint_unavailable_raises(monkeypatch):
+    """If a history endpoint 4xxs, the client surfaces a TaostatsError."""
+    def handler(_request):
+        return httpx.Response(404, json={"message": "not found"})
+
+    client = _make_client(handler)
+    with pytest.raises(TaostatsError):
+        client.get_tao_price_history()
+
+
+# --------------------------------------------------------------------------- #
+# C1 / C9: mock history fixtures (deterministic, smooth, <=48, graceful)
+# --------------------------------------------------------------------------- #
+
+
+def test_mock_tao_price_history_is_deterministic_and_capped():
+    """Two calls return identical series, ascending, <= 48 points."""
+    mock = MockTaostatsClient()
+    a = mock.get_tao_price_history(hours=24)
+    b = mock.get_tao_price_history(hours=24)
+    assert [(p.timestamp, p.value) for p in a] == [(p.timestamp, p.value) for p in b]
+    assert 0 < len(a) <= MAX_HISTORY_POINTS
+    # Timestamps strictly ascending (chronological).
+    assert [p.timestamp for p in a] == sorted(p.timestamp for p in a)
+    # Smooth oscillation around the 350.0 fixture price (within +/- ~3%).
+    assert all(330.0 <= p.value <= 370.0 for p in a)
+
+
+def test_mock_pool_history_known_netuids_deterministic():
+    """Each fixture netuid yields a stable smooth series around its price."""
+    mock = MockTaostatsClient()
+    bases = {1: 0.0254, 4: 0.0182, 8: 0.0410, 64: 0.0333}
+    for netuid, base in bases.items():
+        a = mock.get_pool_history(netuid, hours=24)
+        b = mock.get_pool_history(netuid, hours=24)
+        assert [(p.timestamp, p.value) for p in a] == [(p.timestamp, p.value) for p in b]
+        assert 0 < len(a) <= MAX_HISTORY_POINTS
+        # Oscillates within +/- ~5% of the fixture price.
+        assert all(base * 0.94 <= p.value <= base * 1.06 for p in a)
+
+
+def test_mock_pool_history_unknown_netuid_is_empty():
+    """Unknown netuids degrade gracefully to an empty series (no sparkline)."""
+    assert MockTaostatsClient().get_pool_history(999) == []
+
+
+def test_mock_pool_history_distinct_phases_per_subnet():
+    """Different subnets do not move in lockstep (distinct phases)."""
+    mock = MockTaostatsClient()
+    s1 = [p.value / 0.0254 for p in mock.get_pool_history(1, hours=24)]
+    s4 = [p.value / 0.0182 for p in mock.get_pool_history(4, hours=24)]
+    # Normalized series differ (phase offset), so they are not identical.
+    assert s1 != s4

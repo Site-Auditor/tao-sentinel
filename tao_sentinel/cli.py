@@ -224,6 +224,17 @@ def watch(
     webhook) exactly as in daemon mode -- use ``--no-notify`` for a
     console-only dry run; otherwise the engine polls forever at the
     configured interval.
+
+    Supported watch ``type`` values (set per watch in the config file):
+    price_change, stake_change, validator_dereg, emission_shift, tao_price
+    (TAO/USD move; no netuid), market_cap (subnet market-cap move),
+    registration_cost (registration-cost DROP), new_subnet (a new subnet
+    appears; no netuid), and price_trend (|24h change|; requires netuid). Run
+    ``tao-sentinel init`` to scaffold a config documenting every type, each new
+    field (alert_cooldown_minutes, watchlist), and the per-tick API-budget math.
+
+    Duplicate alerts are suppressed within ``alert_cooldown_minutes`` (config;
+    0 disables) unless their severity escalates.
     """
     # Imported here so `watch` is the only command that needs the alert stack.
     from .alerts.engine import WatchEngine

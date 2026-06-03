@@ -17,15 +17,38 @@ api_key: env:TAOSTATS_API_KEY
 
 # How often (in seconds) the `watch` service polls for changes. 3600 (hourly)
 # stays comfortably within the Taostats free-tier (~10k calls/month) budget.
+# Per tick: pools (2) + subnets (2) are fetched once each and shared across all
+# pool/subnet watches; tao_price adds +1/tick when used; price_trend reads a
+# per-netuid 24h series through a 6h cache (1 call/netuid per 6h, not per tick).
+# Dashboard watchlist sparklines and /subnet detail views are a separate,
+# 6h-cached / LRU-16 budget. At 3600s the watches below cost ~7 calls/tick
+# (~5,160/month), well under 10k; see deploy notes before lowering the interval.
 poll_interval_seconds: 3600
 
+# Suppress duplicate alerts within this many minutes (same rule+subnet+keys),
+# unless severity escalated. 0 disables dedup.
+alert_cooldown_minutes: 60
+
+# Subnets pinned with sparklines at the top of the dashboard (max 12).
+watchlist: [1, 64]
+
 # Watches evaluated each poll. Supported types: price_change, stake_change,
-# validator_dereg, emission_shift.
+# validator_dereg, emission_shift, tao_price, market_cap, registration_cost,
+# new_subnet, price_trend.
 watches:
   # Alert when subnet 64's alpha pool price moves more than 10%.
   - type: price_change
     netuid: 64
     threshold_pct: 10.0
+
+  # Alert when the TAO/USD price moves more than 5% between ticks (no netuid).
+  - type: tao_price
+    threshold_pct: 5.0
+
+  # Alert when subnet 1's trailing-24h price trend exceeds 15% (requires netuid).
+  - type: price_trend
+    netuid: 1
+    threshold_pct: 15.0
 
 # Optional Telegram notifications. Uncomment and fill in to enable.
 # telegram:

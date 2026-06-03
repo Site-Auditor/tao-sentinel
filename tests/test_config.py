@@ -23,6 +23,7 @@ import pytest
 
 from tao_sentinel.config import (
     API_KEY_ENV_FALLBACK,
+    MAX_WATCHLIST,
     WATCH_TYPES,
     Config,
     TelegramConfig,
@@ -278,3 +279,169 @@ def test_all_known_watch_types_accepted(watch_type):
     """Every canonical watch type validates cleanly."""
     watch = WatchConfig(type=watch_type, netuid=1)
     assert watch.type == watch_type
+
+
+# --------------------------------------------------------------------------- #
+# C2 - new v0.2.0 watch types + netuid requirement
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "watch_type",
+    ["tao_price", "market_cap", "registration_cost", "new_subnet", "price_trend"],
+)
+def test_new_watch_types_are_registered(watch_type):
+    """All five C2 watch types are in WATCH_TYPES and accepted by the model."""
+    assert watch_type in WATCH_TYPES
+    watch = WatchConfig(type=watch_type, netuid=1)
+    assert watch.type == watch_type
+
+
+@pytest.mark.parametrize("watch_type", ["tao_price", "new_subnet"])
+def test_netuid_optional_watch_types_load_without_netuid(tmp_path, watch_type):
+    """tao_price and new_subnet validate with no netuid (global watches)."""
+    path = _write(
+        tmp_path / "global.yaml",
+        f"""
+        watches:
+          - type: {watch_type}
+            threshold_pct: 5.0
+        """,
+    )
+    config = load_config(path)
+    assert config.watches[0].type == watch_type
+    assert config.watches[0].netuid is None
+
+
+def test_price_trend_requires_netuid_at_load(tmp_path):
+    """price_trend without a netuid is rejected loudly at load time."""
+    path = _write(
+        tmp_path / "trend.yaml",
+        """
+        watches:
+          - type: price_trend
+            threshold_pct: 15.0
+        """,
+    )
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert "price_trend" in message
+    assert "netuid" in message
+
+
+def test_price_trend_requires_netuid_at_model_validate():
+    """Direct construction of a netuid-less price_trend also raises."""
+    with pytest.raises(pydantic.ValidationError):
+        WatchConfig(type="price_trend", threshold_pct=15.0)
+
+
+def test_price_trend_with_netuid_is_accepted():
+    """price_trend with a netuid validates cleanly."""
+    watch = WatchConfig(type="price_trend", netuid=8, threshold_pct=15.0)
+    assert watch.netuid == 8
+
+
+# --------------------------------------------------------------------------- #
+# C3 - alert_cooldown_minutes
+# --------------------------------------------------------------------------- #
+
+
+def test_alert_cooldown_defaults_to_sixty():
+    """alert_cooldown_minutes defaults to 60 when omitted."""
+    assert Config().alert_cooldown_minutes == 60
+
+
+def test_alert_cooldown_zero_allowed(tmp_path):
+    """A 0 cooldown (dedup disabled) is a valid configuration."""
+    path = _write(
+        tmp_path / "cd0.yaml",
+        """
+        alert_cooldown_minutes: 0
+        watches: []
+        """,
+    )
+    config = load_config(path)
+    assert config.alert_cooldown_minutes == 0
+
+
+def test_alert_cooldown_negative_rejected():
+    """A negative cooldown window is meaningless and rejected."""
+    with pytest.raises(pydantic.ValidationError):
+        Config(alert_cooldown_minutes=-5)
+
+
+# --------------------------------------------------------------------------- #
+# C4 - watchlist (max 12, unique)
+# --------------------------------------------------------------------------- #
+
+
+def test_watchlist_defaults_to_empty():
+    """watchlist defaults to an empty list."""
+    assert Config().watchlist == []
+
+
+def test_watchlist_within_cap_accepted(tmp_path):
+    """A watchlist at the cap (12 unique netuids) loads cleanly."""
+    netuids = list(range(MAX_WATCHLIST))
+    path = _write(
+        tmp_path / "wl.yaml",
+        f"""
+        watchlist: {netuids}
+        watches: []
+        """,
+    )
+    config = load_config(path)
+    assert config.watchlist == netuids
+    assert len(config.watchlist) == MAX_WATCHLIST
+
+
+def test_watchlist_over_cap_rejected():
+    """A watchlist exceeding MAX_WATCHLIST (12) is rejected."""
+    with pytest.raises(pydantic.ValidationError) as excinfo:
+        Config(watchlist=list(range(MAX_WATCHLIST + 1)))
+    assert str(MAX_WATCHLIST) in str(excinfo.value)
+
+
+def test_watchlist_duplicate_rejected():
+    """Duplicate netuids in the watchlist are rejected."""
+    with pytest.raises(pydantic.ValidationError):
+        Config(watchlist=[1, 1, 64])
+
+
+# --------------------------------------------------------------------------- #
+# C8 - example config documents the new fields/types
+# --------------------------------------------------------------------------- #
+
+
+def test_example_config_documents_new_features(tmp_path):
+    """The bundled example demonstrates the new fields and all new watch types."""
+    path = tmp_path / "sentinel.yaml"
+    write_example_config(str(path))
+    text = path.read_text(encoding="utf-8")
+
+    # New top-level fields are present and documented.
+    assert "alert_cooldown_minutes" in text
+    assert "watchlist" in text
+    # The contract's example watchlist value.
+    assert "[1, 64]" in text
+    # Every new watch type appears in the example.
+    for watch_type in ("tao_price", "market_cap", "registration_cost",
+                        "new_subnet", "price_trend"):
+        assert watch_type in text
+    # Budget math mentions the new sources.
+    assert "6h" in text
+
+
+def test_example_config_loads_with_new_features(tmp_path, monkeypatch):
+    """The expanded example parses into a Config carrying the new fields."""
+    monkeypatch.delenv(API_KEY_ENV_FALLBACK, raising=False)
+    path = tmp_path / "sentinel.yaml"
+    write_example_config(str(path))
+    config = load_config(str(path))
+
+    assert config.watchlist == [1, 64]
+    assert config.alert_cooldown_minutes == 60
+    types_present = {w.type for w in config.watches}
+    assert {"tao_price", "market_cap", "registration_cost",
+            "new_subnet", "price_trend"} <= types_present

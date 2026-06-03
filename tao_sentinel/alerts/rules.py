@@ -14,6 +14,9 @@ the shape::
         "stakes": {coldkey: [StakePosition, ...], ...},
         "validators": {netuid: [ValidatorInfo, ...], ...},
         "timestamp": "<iso8601>",
+        # Optional v0.2.0 keys (only present when a watch needs them):
+        "tao_price": <float>,                       # TAO/USD spot at this tick
+        "history": {"<netuid>": [[ts, value], ...]} # 24h alpha-price series
     }
 
 Rules are deterministic given their inputs and never perform any I/O. They
@@ -74,6 +77,36 @@ def _get_validators(snapshot: dict, netuid: int) -> list[ValidatorInfo]:
 def _get_stakes(snapshot: dict, coldkey: str) -> list[StakePosition]:
     """Return the stake positions for ``coldkey`` in ``snapshot`` (empty if absent)."""
     return snapshot.get("stakes", {}).get(coldkey, [])
+
+
+def _get_tao_price(snapshot: dict) -> float | None:
+    """Return the TAO/USD spot price stored on ``snapshot`` if present."""
+    value = snapshot.get("tao_price")
+    return float(value) if value is not None else None
+
+
+def _get_history(snapshot: dict, netuid: int) -> list[tuple[str, float]]:
+    """Return the stored ``[[ts, value], ...]`` history for ``netuid``.
+
+    The engine persists history keyed by the stringified netuid (snapshots are
+    JSON-round-tripped through the state file). We accept either an ``int`` or
+    ``str`` key so the rule works on both freshly-fetched and reloaded
+    snapshots, and coerce each pair to ``(str, float)``.
+    """
+    raw = snapshot.get("history", {})
+    series = raw.get(str(netuid))
+    if series is None:
+        series = raw.get(netuid)
+    if not series:
+        return []
+    out: list[tuple[str, float]] = []
+    for pair in series:
+        try:
+            ts, value = pair[0], pair[1]
+            out.append((str(ts), float(value)))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
 
 
 def price_change_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
@@ -314,10 +347,205 @@ def emission_shift_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert
     ]
 
 
+def tao_price_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
+    """Fire when the TAO/USD spot price moves beyond ``threshold_pct``.
+
+    Compares the engine-supplied ``tao_price`` (USD) between ticks. This watch
+    is network-wide, so ``netuid`` is not required and the emitted alert carries
+    no netuid. Severity escalates to ``critical`` for moves >= 2x the threshold.
+    """
+    prev_price = _get_tao_price(prev)
+    now_price = _get_tao_price(now)
+    if prev_price is None or now_price is None:
+        return []
+
+    change = _pct_change(prev_price, now_price)
+    if abs(change) < watch.threshold_pct:
+        return []
+
+    direction = "up" if change >= 0 else "down"
+    severity = "critical" if abs(change) >= 2 * watch.threshold_pct else "warning"
+    return [
+        Alert(
+            rule_type="tao_price",
+            severity=severity,
+            title=f"TAO price moved {direction} {abs(change):.1f}%",
+            message=(
+                f"TAO/USD went from ${prev_price:,.2f} to ${now_price:,.2f} "
+                f"({change:+.1f}%, threshold {watch.threshold_pct:.1f}%)."
+            ),
+            netuid=None,
+            timestamp=_now_iso(),
+        )
+    ]
+
+
+def market_cap_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
+    """Fire when a subnet pool's ``market_cap_tao`` moves beyond ``threshold_pct``.
+
+    Reuses the ``pools`` snapshot source (the pool carries ``market_cap_tao``).
+    Severity escalates to ``critical`` for moves >= 2x the threshold.
+    """
+    if watch.netuid is None:
+        return []
+
+    prev_pool = _get_pool(prev, watch.netuid)
+    now_pool = _get_pool(now, watch.netuid)
+    if prev_pool is None or now_pool is None:
+        return []
+    if prev_pool.market_cap_tao is None or now_pool.market_cap_tao is None:
+        return []
+
+    change = _pct_change(prev_pool.market_cap_tao, now_pool.market_cap_tao)
+    if abs(change) < watch.threshold_pct:
+        return []
+
+    direction = "up" if change >= 0 else "down"
+    severity = "critical" if abs(change) >= 2 * watch.threshold_pct else "warning"
+    name = now_pool.name or f"subnet {watch.netuid}"
+    return [
+        Alert(
+            rule_type="market_cap",
+            severity=severity,
+            title=f"Market cap moved {direction} {abs(change):.1f}% on {name}",
+            message=(
+                f"Subnet {watch.netuid} ({name}) market cap went from "
+                f"{prev_pool.market_cap_tao:,.2f} to {now_pool.market_cap_tao:,.2f} "
+                f"TAO ({change:+.1f}%, threshold {watch.threshold_pct:.1f}%)."
+            ),
+            netuid=watch.netuid,
+            timestamp=_now_iso(),
+        )
+    ]
+
+
+def registration_cost_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
+    """Fire when a subnet's ``registration_cost_tao`` DROPS by ``threshold_pct``.
+
+    A cheap-registration sniper: only a *decrease* of at least ``threshold_pct``
+    (relative) is reported, since the use case is catching a window where
+    registering becomes cheap. Reuses the ``subnets`` snapshot source.
+    """
+    if watch.netuid is None:
+        return []
+
+    prev_subnet = _get_subnet(prev, watch.netuid)
+    now_subnet = _get_subnet(now, watch.netuid)
+    if prev_subnet is None or now_subnet is None:
+        return []
+    prev_cost = prev_subnet.registration_cost_tao
+    now_cost = now_subnet.registration_cost_tao
+    if prev_cost is None or now_cost is None:
+        return []
+
+    change = _pct_change(prev_cost, now_cost)
+    # Only a drop (negative change) of at least the threshold magnitude fires.
+    if change > -watch.threshold_pct:
+        return []
+
+    name = now_subnet.name or f"subnet {watch.netuid}"
+    return [
+        Alert(
+            rule_type="registration_cost",
+            severity="warning",
+            title=f"Registration cost dropped {abs(change):.1f}% on {name}",
+            message=(
+                f"Subnet {watch.netuid} ({name}) registration cost fell from "
+                f"{prev_cost:.4f} to {now_cost:.4f} TAO "
+                f"({change:+.1f}%, threshold {watch.threshold_pct:.1f}% drop)."
+            ),
+            netuid=watch.netuid,
+            timestamp=_now_iso(),
+        )
+    ]
+
+
+def new_subnet_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
+    """Fire (info) for each netuid present in ``now`` pools but absent from ``prev``.
+
+    A subnet-launch radar; ``netuid`` is not required (it watches the whole pool
+    set). On the very first run there is no prior pool set to diff against, so
+    nothing fires: an empty ``prev`` pools mapping is treated as "no baseline"
+    rather than "everything is new", mirroring the other first-run guards.
+    """
+    prev_pools = prev.get("pools", {})
+    now_pools = now.get("pools", {})
+    if not prev_pools:
+        return []
+
+    alerts: list[Alert] = []
+    for netuid in sorted(now_pools):
+        if netuid in prev_pools:
+            continue
+        pool = now_pools[netuid]
+        name = pool.name or f"subnet {netuid}"
+        alerts.append(
+            Alert(
+                rule_type="new_subnet",
+                severity="info",
+                title=f"New subnet detected: {name}",
+                message=(
+                    f"Subnet {netuid} ({name}) appeared in the pool set with an "
+                    f"alpha price of {pool.price_tao:.6f} TAO."
+                ),
+                netuid=netuid,
+                timestamp=_now_iso(),
+            )
+        )
+    return alerts
+
+
+def price_trend_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
+    """Fire when the trailing-24h alpha-price move for a netuid >= ``threshold_pct``.
+
+    Uses the engine-supplied per-netuid ``history`` series (first..last point of
+    the trailing 24h, chronological ascending) rather than the tick-to-tick pool
+    diff, so it catches a slow drift that never trips ``price_change`` between
+    two adjacent polls. Requires ``netuid``. Severity escalates to ``critical``
+    for moves >= 2x the threshold.
+    """
+    if watch.netuid is None:
+        return []
+
+    series = _get_history(now, watch.netuid)
+    if len(series) < 2:
+        return []
+
+    first_value = series[0][1]
+    last_value = series[-1][1]
+    change = _pct_change(first_value, last_value)
+    if abs(change) < watch.threshold_pct:
+        return []
+
+    pool = _get_pool(now, watch.netuid)
+    name = (pool.name if pool else None) or f"subnet {watch.netuid}"
+    direction = "up" if change >= 0 else "down"
+    severity = "critical" if abs(change) >= 2 * watch.threshold_pct else "warning"
+    return [
+        Alert(
+            rule_type="price_trend",
+            severity=severity,
+            title=f"24h price trend {direction} {abs(change):.1f}% on {name}",
+            message=(
+                f"Subnet {watch.netuid} ({name}) alpha price moved from "
+                f"{first_value:.6f} to {last_value:.6f} TAO over the trailing 24h "
+                f"({change:+.1f}%, threshold {watch.threshold_pct:.1f}%)."
+            ),
+            netuid=watch.netuid,
+            timestamp=_now_iso(),
+        )
+    ]
+
+
 # Registry mapping watch ``type`` -> evaluation function.
 RULES: dict[str, RuleFunc] = {
     "price_change": price_change_rule,
     "stake_change": stake_change_rule,
     "validator_dereg": validator_dereg_rule,
     "emission_shift": emission_shift_rule,
+    "tao_price": tao_price_rule,
+    "market_cap": market_cap_rule,
+    "registration_cost": registration_cost_rule,
+    "new_subnet": new_subnet_rule,
+    "price_trend": price_trend_rule,
 }

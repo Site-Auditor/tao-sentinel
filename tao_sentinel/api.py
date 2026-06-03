@@ -20,14 +20,17 @@ them.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 import httpx
 
 from .models import (
     Pool,
+    PricePoint,
     StakePosition,
     SubnetInfo,
     TaoPrice,
@@ -88,6 +91,13 @@ ENDPOINTS: dict[str, str] = {
     "subnets": "/api/subnet/latest/v1",
     # confidence: high - /api/metagraph/latest/v1, per-subnet neuron/validator list.
     "validators": "/api/metagraph/latest/v1",
+    # confidence: high - /api/price/history/v1?asset=tao, 15-min TAO/USD candles
+    # (created_at + price decimal-string USD); shared {pagination,data} envelope.
+    "tao_price_history": "/api/price/history/v1",
+    # confidence: high - /api/dtao/pool/history/v1?netuid=N, per-subnet dTAO pool
+    # history; price = alpha-in-TAO decimal string. Default frequency is DAILY,
+    # frequency=by_hour gives ~1h spacing; shared {pagination,data} envelope.
+    "pool_history": "/api/dtao/pool/history/v1",
 }
 
 
@@ -398,6 +408,61 @@ def parse_validator_info(item: dict) -> ValidatorInfo:
         vtrust=_to_float(item.get("validator_trust")),
         active=_to_bool(item.get("active")),
     )
+
+
+#: Maximum number of points returned by any history method. Sparklines need
+#: only a coarse shape, and capping here bounds both payload size and the work
+#: downstream consumers do.
+MAX_HISTORY_POINTS = 48
+
+
+def parse_price_point(item: dict, *, value_key: str, time_key: str) -> Optional[PricePoint]:
+    """Parse one history row into a :class:`PricePoint`, or ``None`` if unusable.
+
+    Args:
+        item: A single ``data`` row from a history endpoint.
+        value_key: Key holding the numeric value (``price`` for both history
+            endpoints; it is a decimal string -- USD for TAO price history,
+            TAO-per-alpha for pool history -- and is NOT divided by 1e9).
+        time_key: Key holding the ISO-8601 timestamp (``created_at`` for TAO
+            price history, ``timestamp`` for pool history).
+
+    Returns:
+        A :class:`PricePoint`, or ``None`` when the value cannot be parsed (so
+        the caller can skip junk rows rather than emit zeros).
+    """
+    value = _to_float(item.get(value_key))
+    if value is None:
+        return None
+    timestamp = item.get(time_key) or item.get("timestamp") or item.get("created_at") or ""
+    return PricePoint(timestamp=str(timestamp), value=value)
+
+
+def downsample_points(points: list[PricePoint], max_points: int = MAX_HISTORY_POINTS) -> list[PricePoint]:
+    """Reduce a chronological series to at most ``max_points`` points.
+
+    Picks evenly spaced indices across the series and ALWAYS keeps the last
+    point (so the most recent value -- the one a sparkline's end-dot shows -- is
+    never dropped). Order is preserved. Series already within the cap are
+    returned unchanged. ``max_points`` is clamped to at least 1.
+
+    Args:
+        points: Chronologically ascending samples.
+        max_points: Maximum number of points to keep.
+    """
+    max_points = max(1, max_points)
+    n = len(points)
+    if n <= max_points:
+        return list(points)
+    if max_points == 1:
+        return [points[-1]]
+    # Evenly spaced indices 0..n-1; force the final index to land on the last
+    # point so the latest value survives downsampling.
+    step = (n - 1) / (max_points - 1)
+    indices = sorted({int(round(i * step)) for i in range(max_points)})
+    if indices[-1] != n - 1:
+        indices[-1] = n - 1
+    return [points[i] for i in indices]
 
 
 # --------------------------------------------------------------------------- #
@@ -758,6 +823,74 @@ class TaostatsClient:
         )
         return [parse_validator_info(row) for row in rows]
 
+    # -- history (sparkline series) ------------------------------------------- #
+
+    def get_tao_price_history(self, hours: int = 24) -> list[PricePoint]:
+        """Return TAO/USD price history over the trailing ``hours``.
+
+        Fetches one descending page of the 15-minute candle series (price is a
+        USD decimal string, NOT RAO), trims to roughly the requested window
+        (4 candles/hour), reverses to chronological-ascending order, and
+        downsamples to <= :data:`MAX_HISTORY_POINTS` points. A single page
+        (``limit`` = window in candles, capped at 200) keeps this to ONE API
+        call so the budget is bounded.
+
+        Args:
+            hours: Trailing window in hours (clamped to >= 1).
+        """
+        hours = max(1, hours)
+        # 4 candles/hour at 15-min granularity; cap the page size so a long
+        # window cannot blow the per-page limit.
+        wanted = min(hours * 4, 200)
+        body = self._get(
+            ENDPOINTS["tao_price_history"],
+            {"asset": "tao", "order": "timestamp_desc", "limit": wanted, "page": 1},
+        )
+        rows = self._extract_rows(body)
+        points = [
+            p for p in (
+                parse_price_point(row, value_key="price", time_key="created_at")
+                for row in rows
+            ) if p is not None
+        ]
+        # API returns newest-first; sparkline wants chronological ascending.
+        points.reverse()
+        return downsample_points(points)
+
+    def get_pool_history(self, netuid: int, hours: int = 24) -> list[PricePoint]:
+        """Return a subnet's alpha-price (in TAO) history over ``hours``.
+
+        Uses ``frequency=by_hour`` (~1 point/hour) so a small page covers the
+        window; ``price`` is the alpha price in TAO (decimal string, NOT RAO).
+        Trims to the window, reverses to chronological-ascending order, and
+        downsamples to <= :data:`MAX_HISTORY_POINTS` points. ONE API call.
+
+        Args:
+            netuid: Subnet id (required by the pool-history endpoint).
+            hours: Trailing window in hours (clamped to >= 1).
+        """
+        hours = max(1, hours)
+        wanted = min(hours, 200)
+        body = self._get(
+            ENDPOINTS["pool_history"],
+            {
+                "netuid": netuid,
+                "frequency": "by_hour",
+                "order": "block_number_desc",
+                "limit": wanted,
+                "page": 1,
+            },
+        )
+        rows = self._extract_rows(body)
+        points = [
+            p for p in (
+                parse_price_point(row, value_key="price", time_key="timestamp")
+                for row in rows
+            ) if p is not None
+        ]
+        points.reverse()
+        return downsample_points(points)
+
     # -- lifecycle ------------------------------------------------------------ #
 
     def close(self) -> None:
@@ -780,11 +913,15 @@ class TaostatsClient:
 class MockTaostatsClient:
     """Deterministic, no-network stand-in for :class:`TaostatsClient`.
 
-    Exposes the same five public methods backed by static fixtures covering
-    netuids 1 (apex), 4 (targon), 8 (ptn), and 64 (chutes). Provides one fixture
-    coldkey (``5MockColdkey...``) with three stake positions and a TAO price of
-    350.0 USD. Used by ``--mock`` and the test suite so that the entire tool
-    works without an API key or network access.
+    Exposes the same public surface as :class:`TaostatsClient` (the five
+    latest-state methods plus :meth:`get_tao_price_history` /
+    :meth:`get_pool_history`) backed by static fixtures covering netuids 1
+    (apex), 4 (targon), 8 (ptn), and 64 (chutes). Provides one fixture coldkey
+    (``5MockColdkey...``) with three stake positions and a TAO price of 350.0
+    USD. History methods return deterministic smooth (sine-flavored) series so
+    ``--mock`` demos render sparklines without any network. Used by ``--mock``
+    and the test suite so that the entire tool works without an API key or
+    network access.
     """
 
     #: The single fixture coldkey holding stake positions.
@@ -917,6 +1054,78 @@ class MockTaostatsClient:
                 )
             )
         return validators
+
+    #: Anchor "now" for synthetic history timestamps. Fixed so series are fully
+    #: deterministic (independent of the wall clock) for stable demos/tests.
+    _HISTORY_ANCHOR = datetime(2026, 6, 3, 0, 0, 0, tzinfo=timezone.utc)
+
+    @staticmethod
+    def _synth_series(
+        *,
+        n: int,
+        base: float,
+        amplitude_frac: float,
+        phase: float,
+        step: timedelta,
+        anchor: datetime,
+    ) -> list[PricePoint]:
+        """Build a deterministic, smooth (sine-flavored) ascending series.
+
+        ``n`` points ending at ``anchor`` spaced ``step`` apart, oscillating
+        +/- ``amplitude_frac`` around ``base`` with a per-series ``phase`` so
+        different subnets do not move in lockstep. Pure function of its inputs,
+        so output is reproducible across runs.
+        """
+        points: list[PricePoint] = []
+        for i in range(n):
+            # i = 0 is the oldest point; the last point lands exactly on anchor.
+            frac = i / max(1, n - 1)
+            value = base * (1.0 + amplitude_frac * math.sin(phase + frac * 2.0 * math.pi))
+            ts = anchor - step * (n - 1 - i)
+            points.append(PricePoint(timestamp=ts.isoformat().replace("+00:00", "Z"),
+                                     value=round(value, 9)))
+        return points
+
+    def get_tao_price_history(self, hours: int = 24) -> list[PricePoint]:
+        """Return a deterministic synthetic TAO/USD history (<=48 points).
+
+        Smooth sine-flavored series around the fixture price (350.0 USD) at
+        15-minute spacing, downsampled to <= :data:`MAX_HISTORY_POINTS`.
+        """
+        hours = max(1, hours)
+        n = min(hours * 4, 200)
+        series = self._synth_series(
+            n=n, base=350.0, amplitude_frac=0.03, phase=0.0,
+            step=timedelta(minutes=15), anchor=self._HISTORY_ANCHOR,
+        )
+        return downsample_points(series)
+
+    #: Per-netuid synthetic-series parameters: base alpha price (TAO) and phase.
+    _HISTORY_PARAMS: dict[int, tuple[float, float]] = {
+        1: (0.0254, 0.0),
+        4: (0.0182, 1.2),
+        8: (0.0410, 2.4),
+        64: (0.0333, 3.6),
+    }
+
+    def get_pool_history(self, netuid: int, hours: int = 24) -> list[PricePoint]:
+        """Return a deterministic synthetic alpha-price (TAO) history.
+
+        Smooth sine-flavored series around the fixture price for netuids 1, 4,
+        8, 64 at ~1h spacing, downsampled to <= :data:`MAX_HISTORY_POINTS`.
+        Unknown netuids return an empty list (graceful no-sparkline downstream).
+        """
+        params = self._HISTORY_PARAMS.get(netuid)
+        if params is None:
+            return []
+        base, phase = params
+        hours = max(1, hours)
+        n = min(hours, 200)
+        series = self._synth_series(
+            n=n, base=base, amplitude_frac=0.05, phase=phase,
+            step=timedelta(hours=1), anchor=self._HISTORY_ANCHOR,
+        )
+        return downsample_points(series)
 
     def close(self) -> None:
         """No-op; the mock holds no network resources."""

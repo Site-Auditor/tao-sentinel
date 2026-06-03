@@ -22,6 +22,13 @@ _SEVERITY_STYLES = {
     "critical": "bold red",
 }
 
+# Severity ordering for digest grouping (most severe first) and escalation.
+_SEVERITY_ORDER = ("critical", "warning", "info")
+
+# Telegram messages cap at 4096 chars; stay well under to leave headroom for
+# the API envelope and any trailing truncation marker.
+_TELEGRAM_MAX_CHARS = 3500
+
 
 class Notifier(abc.ABC):
     """Abstract base class for alert delivery channels."""
@@ -34,6 +41,16 @@ class Notifier(abc.ABC):
         warning instead so the watch loop keeps running.
         """
         raise NotImplementedError
+
+    def send_many(self, alerts: list[Alert]) -> None:
+        """Deliver a batch of ``alerts``.
+
+        The default loops over :meth:`send` (one delivery per alert). Channels
+        that benefit from batching (e.g. a single combined chat message) should
+        override this. Like :meth:`send`, must not raise on delivery failure.
+        """
+        for alert in alerts:
+            self.send(alert)
 
 
 class ConsoleNotifier(Notifier):
@@ -93,11 +110,72 @@ class TelegramNotifier(Notifier):
             f"{alert.timestamp}"
         )
 
+    def _format_digest(self, alerts: list[Alert]) -> str:
+        """Format a batch of alerts into one severity-grouped digest body.
+
+        Alerts are grouped under ``CRITICAL`` / ``WARNING`` / ``INFO`` headers
+        (most severe first; unknown severities fall under a trailing ``OTHER``
+        group). The body is capped at :data:`_TELEGRAM_MAX_CHARS`; once adding
+        the next line would exceed the cap it is truncated with a
+        ``...and N more`` marker so a flood of alerts can never produce a
+        message Telegram will reject.
+        """
+        # Group by severity, preserving input order within each group.
+        groups: dict[str, list[Alert]] = {}
+        for alert in alerts:
+            groups.setdefault(alert.severity, []).append(alert)
+
+        ordered_severities = [s for s in _SEVERITY_ORDER if s in groups]
+        ordered_severities += [s for s in groups if s not in _SEVERITY_ORDER]
+
+        lines: list[str] = []
+        for severity in ordered_severities:
+            label = severity.upper() if severity in _SEVERITY_ORDER else "OTHER"
+            group = groups[severity]
+            lines.append(f"== {label} ({len(group)}) ==")
+            for alert in group:
+                netuid = (
+                    f" (netuid {alert.netuid})" if alert.netuid is not None else ""
+                )
+                lines.append(f"- {alert.title}{netuid}")
+
+        body = ""
+        total = len(alerts)
+        rendered = 0
+        for line in lines:
+            candidate = line if not body else body + "\n" + line
+            # Reserve room for a possible truncation marker.
+            marker = f"\n...and {total - rendered} more"
+            if len(candidate) + len(marker) > _TELEGRAM_MAX_CHARS:
+                remaining = total - rendered
+                body += f"\n...and {remaining} more"
+                return body
+            body = candidate
+            # Only header lines start with "==": don't count them as alerts.
+            if not line.startswith("== "):
+                rendered += 1
+        return body
+
     def send(self, alert: Alert) -> None:
         """POST the alert to Telegram, logging (never raising) on failure."""
+        self._post(self._format(alert))
+
+    def send_many(self, alerts: list[Alert]) -> None:
+        """Send all ``alerts`` as ONE combined, severity-grouped digest message.
+
+        Collapsing a batch into a single message avoids hammering the Telegram
+        rate limit (and the user's notifications) when many watches fire on the
+        same tick. An empty batch sends nothing.
+        """
+        if not alerts:
+            return
+        self._post(self._format_digest(alerts))
+
+    def _post(self, text: str) -> None:
+        """POST ``text`` to the Telegram chat, logging (never raising) on failure."""
         import httpx
 
-        payload = {"chat_id": self._chat_id, "text": self._format(alert)}
+        payload = {"chat_id": self._chat_id, "text": text}
         try:
             resp = httpx.post(self._url, json=payload, timeout=self._timeout)
             if resp.status_code >= 400:

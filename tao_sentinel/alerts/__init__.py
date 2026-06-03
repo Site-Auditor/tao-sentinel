@@ -18,8 +18,13 @@ from tao_sentinel.alerts.notify import (
 from tao_sentinel.alerts.rules import (
     RULES,
     emission_shift_rule,
+    market_cap_rule,
+    new_subnet_rule,
     price_change_rule,
+    price_trend_rule,
+    registration_cost_rule,
     stake_change_rule,
+    tao_price_rule,
     validator_dereg_rule,
 )
 
@@ -35,4 +40,9 @@ __all__ = [
     "stake_change_rule",
     "validator_dereg_rule",
     "emission_shift_rule",
+    "tao_price_rule",
+    "market_cap_rule",
+    "registration_cost_rule",
+    "new_subnet_rule",
+    "price_trend_rule",
 ]

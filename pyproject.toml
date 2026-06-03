@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tao-sentinel"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Bittensor watchtower built on the Taostats API: price/stake/validator/emission alerts, dTAO portfolio valuation, subnet health scanning, and a self-hosted dashboard."
 readme = "README.md"
 requires-python = ">=3.10"

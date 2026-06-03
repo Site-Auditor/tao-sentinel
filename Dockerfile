@@ -51,10 +51,11 @@ USER sentinel
 # directly.
 EXPOSE 8787
 
-# Healthcheck hits the JSON status endpoint. curl is not in python:3.12-slim, so
-# use the bundled Python + urllib instead.
+# Healthcheck hits the dedicated liveness route (NOT /api/status: that blocks
+# on the rate limiter during a cold cache and made fresh deploys flap
+# unhealthy). curl is not in python:3.12-slim, so use Python + urllib.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/status', timeout=4).status == 200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=4).status == 200 else 1)"
 
 # The app handles SIGINT cleanly; SIGTERM would hard-kill it mid-poll.
 STOPSIGNAL SIGINT

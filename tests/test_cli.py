@@ -377,11 +377,14 @@ def test_ttl_cache_single_flight_under_concurrency():
 
 
 def test_ttl_cache_refills_after_expiry():
-    """A stale entry is recomputed; a fresh one is reused (lock is re-entrant-free)."""
+    """A stale entry serves stale-while-revalidating; the refresh lands for
+    the NEXT call (SWR semantics: requests never block once a value exists)."""
     from tao_sentinel.web.app import _TTLCache
 
     clock = {"t": 0.0}
-    cache = _TTLCache(ttl_seconds=10.0, clock=lambda: clock["t"])
+    cache = _TTLCache(
+        ttl_seconds=10.0, clock=lambda: clock["t"], swr_background=False
+    )
     calls = {"n": 0}
 
     def loader():
@@ -391,8 +394,9 @@ def test_ttl_cache_refills_after_expiry():
     assert cache.get("k", loader) == 1
     assert cache.get("k", loader) == 1  # warm: no reload
     clock["t"] = 20.0  # expire
-    assert cache.get("k", loader) == 2  # stale: reload
-    assert calls["n"] == 2
+    assert cache.get("k", loader) == 1  # stale served; refresh ran inline
+    assert calls["n"] == 2  # the reload DID happen
+    assert cache.get("k", loader) == 2  # next call sees the fresh value
 
 
 def test_web_concurrent_cold_requests_do_not_stampede(monkeypatch):
@@ -608,3 +612,36 @@ def test_portfolio_json_has_no_float_artifacts(monkeypatch):
     payload = _json.loads(result.stdout)
     assert payload["total_value_tao"] == 87.55
     assert "000000000001" not in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# C7 - version bump to 0.2.0
+# --------------------------------------------------------------------------- #
+
+
+def test_version_is_0_2_0():
+    """The package __version__ reflects the v0.2.0 bump."""
+    from tao_sentinel import __version__
+
+    assert __version__ == "0.2.0"
+
+
+def test_version_command_reports_0_2_0():
+    """`tao-sentinel version` prints the bumped version."""
+    result = runner.invoke(cli.app, ["version"])
+    assert result.exit_code == 0
+    assert "0.2.0" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# C8 - watch --help mentions the new watch types
+# --------------------------------------------------------------------------- #
+
+
+def test_watch_help_mentions_new_watch_types():
+    """`watch --help` documents the v0.2.0 watch types for discoverability."""
+    result = runner.invoke(cli.app, ["watch", "--help"])
+    assert result.exit_code == 0
+    for watch_type in ("tao_price", "market_cap", "registration_cost",
+                       "new_subnet", "price_trend"):
+        assert watch_type in result.output

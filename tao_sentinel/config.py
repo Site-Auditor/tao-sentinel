@@ -15,7 +15,7 @@ import os
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +26,46 @@ API_KEY_ENV_FALLBACK = "TAOSTATS_API_KEY"
 _ENV_INDIRECTION_PREFIX = "env:"
 
 #: Recognised watch types for :class:`WatchConfig`.
+#:
+#: The original four (``price_change``, ``stake_change``, ``validator_dereg``,
+#: ``emission_shift``) are joined by the v0.2.0 additions (C2):
+#:
+#: * ``tao_price``         - TAO/USD percent move between ticks (netuid optional).
+#: * ``market_cap``        - percent move of a subnet pool's market cap in TAO.
+#: * ``registration_cost`` - registration cost DROP by ``threshold_pct``.
+#: * ``new_subnet``        - a netuid that appears in the pool list (netuid optional).
+#: * ``price_trend``       - |change| over the trailing 24h history >= threshold.
 WATCH_TYPES = (
     "price_change",
     "stake_change",
     "validator_dereg",
     "emission_shift",
+    "tao_price",
+    "market_cap",
+    "registration_cost",
+    "new_subnet",
+    "price_trend",
 )
+
+#: Watch types for which ``netuid`` is mandatory. ``price_trend`` fetches a
+#: per-subnet 24h history series, so without a netuid there is nothing to fetch
+#: or evaluate; the engine would silently skip it, so reject it at load time.
+#: The other per-subnet types (``price_change``, ``validator_dereg``,
+#: ``emission_shift``, ``market_cap``) are NOT listed here because their
+#: pre-v0.2.0 behaviour permitted an absent netuid (a config-wide / best-effort
+#: watch), and tightening that retroactively would break existing configs.
+_NETUID_REQUIRED_TYPES = ("price_trend",)
+
+#: Watch types that never need a netuid (documented for completeness; these are
+#: simply not subject to the requirement above). ``tao_price`` tracks the
+#: global TAO/USD price and ``new_subnet`` scans the whole pool list for newly
+#: appearing subnets.
+_NETUID_OPTIONAL_TYPES = ("tao_price", "new_subnet")
+
+#: Maximum number of pinned subnets allowed in :attr:`Config.watchlist`. Each
+#: pinned subnet costs one (6h-cached) history call for its sparkline, so the
+#: cap keeps the dashboard's worst-case API spend bounded (see C4/C8).
+MAX_WATCHLIST = 12
 
 
 class TelegramConfig(BaseModel):
@@ -50,10 +84,14 @@ class WatchConfig(BaseModel):
     """A single watch definition.
 
     Attributes:
-        type: Watch type; one of :data:`WATCH_TYPES`
+        type: Watch type; one of :data:`WATCH_TYPES`. The original four
             (``price_change``, ``stake_change``, ``validator_dereg``,
-            ``emission_shift``).
-        netuid: Subnet id the watch targets, if applicable.
+            ``emission_shift``) plus the v0.2.0 additions (``tao_price``,
+            ``market_cap``, ``registration_cost``, ``new_subnet``,
+            ``price_trend``).
+        netuid: Subnet id the watch targets. Required for ``price_trend``;
+            optional (and ignored) for the global ``tao_price`` and
+            ``new_subnet`` types; optional for the remaining per-subnet types.
         coldkey: Coldkey ss58 address the watch targets, if applicable.
         hotkey: Hotkey ss58 address the watch targets, if applicable.
         threshold_pct: Percentage threshold that triggers the watch.
@@ -91,6 +129,32 @@ class WatchConfig(BaseModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def _validate_netuid_present(self) -> "WatchConfig":
+        """Require ``netuid`` for watch types that cannot work without one.
+
+        ``price_trend`` evaluates a per-subnet 24h history series; with no
+        ``netuid`` the engine has nothing to fetch and would silently skip the
+        watch. Surfacing the omission at load time (the same philosophy as
+        :meth:`_validate_type`) turns a silent dead watch into an actionable
+        config error.
+
+        This runs as an after-model validator (not a per-field one) so it fires
+        even when ``netuid`` is omitted entirely and falls back to its ``None``
+        default -- a per-field validator does not run for a defaulted field.
+
+        Returns:
+            ``self`` unchanged.
+
+        Raises:
+            ValueError: If a netuid-requiring watch type omits ``netuid``.
+        """
+        if self.type in _NETUID_REQUIRED_TYPES and self.netuid is None:
+            raise ValueError(
+                f"watch type {self.type!r} requires a netuid"
+            )
+        return self
+
 
 class Config(BaseModel):
     """Top-level tao-sentinel configuration.
@@ -105,6 +169,14 @@ class Config(BaseModel):
             3600 (hourly) to stay within the documented ~10k calls/month
             free-tier budget; see the example config for the per-tick cost math.
         state_path: Path to the JSON state file (``~`` is expanded by consumers).
+        alert_cooldown_minutes: Suppress an identical alert (same
+            rule_type|netuid|coldkey|hotkey key) if one fired within this many
+            minutes, UNLESS its severity escalated. ``0`` disables dedup.
+            Defaults to 60.
+        watchlist: Subnet netuids to pin in the dashboard's watchlist section,
+            each rendered with a 6h-cached sparkline. Capped at
+            :data:`MAX_WATCHLIST` (12) to keep the dashboard's history-call
+            spend bounded.
     """
 
     api_key: Optional[str] = None
@@ -113,6 +185,61 @@ class Config(BaseModel):
     watches: list[WatchConfig] = Field(default_factory=list)
     poll_interval_seconds: int = 3600
     state_path: str = "~/.tao-sentinel/state.json"
+    alert_cooldown_minutes: int = 60
+    watchlist: list[int] = Field(default_factory=list)
+
+    @field_validator("alert_cooldown_minutes")
+    @classmethod
+    def _validate_cooldown(cls, value: int) -> int:
+        """Reject a negative cooldown (a negative window is meaningless).
+
+        ``0`` is allowed and disables dedup; any positive value is a window in
+        minutes.
+
+        Args:
+            value: The configured cooldown in minutes.
+
+        Returns:
+            The validated ``value`` unchanged.
+
+        Raises:
+            ValueError: If ``value`` is negative.
+        """
+        if value < 0:
+            raise ValueError(
+                f"alert_cooldown_minutes must be >= 0, got {value}"
+            )
+        return value
+
+    @field_validator("watchlist")
+    @classmethod
+    def _validate_watchlist(cls, value: list[int]) -> list[int]:
+        """Cap the watchlist at :data:`MAX_WATCHLIST` and require unique netuids.
+
+        Each pinned subnet costs one 6h-cached history call for its sparkline,
+        so an unbounded watchlist would let the dashboard breach the API budget
+        the rest of the contract is built to protect. Duplicates are rejected
+        too: they would render the same pinned subnet twice and waste a cache
+        slot without adding information.
+
+        Args:
+            value: The configured list of netuids.
+
+        Returns:
+            The validated list unchanged.
+
+        Raises:
+            ValueError: If the list exceeds :data:`MAX_WATCHLIST` entries or
+                contains duplicates.
+        """
+        if len(value) > MAX_WATCHLIST:
+            raise ValueError(
+                f"watchlist may pin at most {MAX_WATCHLIST} subnets, "
+                f"got {len(value)}"
+            )
+        if len(set(value)) != len(value):
+            raise ValueError("watchlist must not contain duplicate netuids")
+        return value
 
 
 def _resolve_api_key(api_key: Optional[str]) -> Optional[str]:
@@ -210,29 +337,59 @@ api_key: env:TAOSTATS_API_KEY
 # How often (in seconds) to poll for changes when running `watch`.
 #
 # MONTHLY BUDGET: each poll ("tick") spends API calls per distinct data source
-# your watches touch -- pools (all price_change watches share one source),
-# subnets (all emission_shift watches share one source), one source per watched
-# coldkey (stake_change), and one source per watched netuid (validator_dereg).
+# your watches touch. Shared sources are fetched ONCE per tick:
+#   pools    - shared by price_change, market_cap, and new_subnet watches
+#   subnets  - shared by emission_shift and registration_cost watches
+#   coldkey  - one source per watched coldkey (stake_change)
+#   netuid   - one source per watched netuid (validator_dereg)
+#   tao_price- the global TAO/USD price, +1 call/tick when ANY tao_price
+#              watch is present (0 if none)
+#   history  - price_trend reads a per-netuid 24h series, but through a 6h TTL
+#              cache: 1 call per watched netuid only once per 6h, NOT per tick
 # Each LIST source is paginated at 100 rows/page, so per-source HTTP calls =
 # ceil(rows / 100) pages: with >100 subnets/pools on mainnet today, pools and
-# subnets are 2 HTTP calls each, not 1.
-# The watches below touch 4 sources; at 2 pages each that is 8 calls/tick.
-# Calls/month = calls_per_tick * (3600 / poll_interval_seconds) * 24 * 30.
-# The Taostats free tier is ~10k calls/month, so keep that product under 10000:
-#   3600s (hourly) -> 8 * 1 * 24 * 30   =  5,760 calls/month  (safe)
-#    900s          -> 8 * 4 * 24 * 30   = 23,040 calls/month   (OVER budget)
-#    300s          -> 8 * 12 * 24 * 30  = 69,120 calls/month   (~6.9x OVER)
-# Lower this only if you have a paid plan or fewer/cheaper watches.
+# subnets are 2 HTTP calls each, not 1. tao_price/history are 1 call each.
+#
+# The watches below touch pools (2) + subnets (2) + 1 coldkey (1) + 1 netuid
+# (1) + tao_price (1) = 7 calls/tick. The single price_trend watch adds a
+# history call only every 6h: 1 netuid * (30*24 / 6) = 120 calls/month.
+# Calls/month = per_tick_calls * (3600 / poll_interval_seconds) * 24 * 30
+#               + price_trend_history (~120/month here).
+# The Taostats free tier is ~10k calls/month, so keep the total under 10000:
+#   3600s (hourly) -> 7 * 1 * 24 * 30 + 120  =  5,160 calls/month  (safe)
+#    900s          -> 7 * 4 * 24 * 30 + 120  = 20,280 calls/month   (OVER budget)
+#    300s          -> 7 * 12 * 24 * 30 + 120 = 60,600 calls/month   (~6x OVER)
+# Dashboard extras (separate process, NOT per-tick): each pinned watchlist
+# subnet costs 1 history call per 6h, the header TAO-price sparkline 1/6h, and
+# each uncached /subnet/{netuid} detail view 1 call (LRU-capped at 16 views).
+# Lower poll_interval_seconds only on a paid plan or with fewer/cheaper watches.
 poll_interval_seconds: 3600
 
 # Where to persist watch-engine state between runs.
 state_path: ~/.tao-sentinel/state.json
+
+# Suppress duplicate alerts: an identical alert (same rule type + subnet +
+# coldkey + hotkey) is skipped if one already fired within this many minutes,
+# UNLESS its severity escalated (info < warning < critical). Set to 0 to send
+# every alert every tick (no dedup).
+alert_cooldown_minutes: 60
+
+# Subnets to pin at the top of the web dashboard, each with a sparkline.
+# Capped at 12; each pinned subnet costs one 6h-cached history call.
+watchlist: [1, 64]
 
 # Watches to evaluate each poll. Supported types:
 #   price_change      - alpha pool price moves beyond threshold_pct
 #   stake_change      - a coldkey position changes by threshold_pct
 #   validator_dereg   - a watched hotkey leaves/goes inactive on a subnet
 #   emission_shift    - subnet emission_pct moves beyond threshold_pct
+#   tao_price         - TAO/USD price moves beyond threshold_pct (no netuid)
+#   market_cap        - a subnet pool's market cap (TAO) moves beyond threshold
+#   registration_cost - a subnet's registration cost DROPS by threshold_pct
+#                       (a cheap-registration sniper)
+#   new_subnet        - a brand-new subnet appears in the pool list (no netuid)
+#   price_trend       - |change| over the trailing 24h history >= threshold_pct
+#                       (requires netuid; uses the 6h-cached history endpoint)
 watches:
   # Alert when subnet 1 (apex) alpha price moves more than 10%.
   - type: price_change
@@ -253,4 +410,27 @@ watches:
   - type: emission_shift
     netuid: 8
     threshold_pct: 20.0
+
+  # Alert when the TAO/USD price moves more than 5% between ticks.
+  - type: tao_price
+    threshold_pct: 5.0
+
+  # Alert when subnet 4's pool market cap (TAO) moves more than 25%.
+  - type: market_cap
+    netuid: 4
+    threshold_pct: 25.0
+
+  # Alert when subnet 8's registration cost DROPS by more than 30%.
+  - type: registration_cost
+    netuid: 8
+    threshold_pct: 30.0
+
+  # Alert (info) whenever a brand-new subnet appears in the pool list.
+  - type: new_subnet
+
+  # Alert when subnet 1's trailing-24h price trend exceeds 15% in either
+  # direction (requires netuid; reads the 6h-cached history series).
+  - type: price_trend
+    netuid: 1
+    threshold_pct: 15.0
 """

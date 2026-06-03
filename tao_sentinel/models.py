@@ -27,6 +27,23 @@ class TaoPrice(BaseModel):
     timestamp: str
 
 
+class PricePoint(BaseModel):
+    """A single (timestamp, value) sample in a price/metric history series.
+
+    Used for sparkline series: TAO/USD price history and per-subnet alpha
+    pool-price (in TAO) history. ``value`` is in whatever unit the producing
+    method documents (USD for TAO price history, TAO-per-alpha for pool
+    history); the client divides any RAO fields before populating this.
+
+    Attributes:
+        timestamp: ISO-8601 timestamp string for the sample.
+        value: The numeric value at that timestamp.
+    """
+
+    timestamp: str
+    value: float
+
+
 class Pool(BaseModel):
     """A dTAO liquidity-pool snapshot for a single subnet.
 
