@@ -10,7 +10,7 @@ interface StatCardsProps {
   portfolio: Portfolio | null;
 }
 
-/** A number that counts up to its value on mount — the "instrument coming
+/** A number that counts up to its value on mount, the "instrument coming
  * online" moment. Falls back to a static render under reduced motion. */
 function CountUp({
   value,
@@ -77,7 +77,7 @@ function StatCardsImpl({ meta, portfolio }: StatCardsProps) {
       <Card
         label="Subnets tracked"
         index={0}
-        foot={<span className="text-ink-faint">graded A–F each refresh</span>}
+        foot={<span className="text-ink-faint">scored on every refresh</span>}
       >
         <CountUp value={meta.n_subnets} format={(v) => Math.round(v).toString()} />
       </Card>
@@ -98,7 +98,7 @@ function StatCardsImpl({ meta, portfolio }: StatCardsProps) {
         {meta.tao_price_usd != null ? (
           <CountUp value={meta.tao_price_usd} format={(v) => fmtUsd(v)} />
         ) : (
-          <span className="text-ink-faint text-base font-normal">—</span>
+          <span className="text-ink-faint text-base font-normal">-</span>
         )}
       </Card>
 
@@ -107,7 +107,7 @@ function StatCardsImpl({ meta, portfolio }: StatCardsProps) {
         index={2}
         foot={
           <span className="text-ink-faint">
-            {meta.n_alerts === 0 ? "quiet network" : "see timeline →"}
+            {meta.n_alerts === 0 ? "none recently" : "see the timeline"}
           </span>
         }
       >
@@ -121,7 +121,7 @@ function StatCardsImpl({ meta, portfolio }: StatCardsProps) {
           portfolio?.total_value_usd != null ? (
             <span className="text-ink-dim tnum">{fmtUsd(portfolio.total_value_usd)}</span>
           ) : portfolio ? null : (
-            <span className="text-ink-faint">add a coldkey watch to enable</span>
+            <span className="text-ink-faint">set a coldkey watch to enable it</span>
           )
         }
       >

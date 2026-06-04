@@ -22,7 +22,7 @@ function isProvisional(metrics: Record<string, unknown>): boolean {
   return metrics.provisional === true;
 }
 
-/** Curated, human-labelled metric rows — raw engine keys stay in the API.
+/** Curated, human-labelled metric rows; raw engine keys stay in the API.
  * Order is editorial: population first, then economics, then concentration. */
 const METRIC_PRESENTATION: Array<{
   key: string;
@@ -55,11 +55,6 @@ function ScoreBreakdown({ metrics }: { metrics: Record<string, unknown> }) {
         {rows.map((r) => (
           <DefRow key={r.label} label={r.label} value={r.value} />
         ))}
-        {isProvisional(metrics) ? (
-          <div className="py-2 text-[11.5px] text-warn">
-            Provisional — validator concentration not yet factored in.
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -90,7 +85,7 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
       <div className="card overflow-hidden">
         {vals.length === 0 ? (
           <div className="px-4 py-6 text-[13px] text-ink-faint">
-            No validator data — try again after the next refresh.
+            No validator data yet. It usually appears after the next refresh.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -135,7 +130,7 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
                       </div>
                     </td>
                     <td className="hidden sm:table-cell text-right px-3 tnum">
-                      {v.vtrust == null ? "—" : v.vtrust.toFixed(2)}
+                      {v.vtrust == null ? "-" : v.vtrust.toFixed(2)}
                     </td>
                   </tr>
                 ))}
@@ -252,7 +247,7 @@ export default function Subnet() {
                     label="alpha in pool"
                     value={
                       pool.alpha_in == null
-                        ? "—"
+                        ? "-"
                         : pool.alpha_in.toLocaleString("en-US")
                     }
                   />

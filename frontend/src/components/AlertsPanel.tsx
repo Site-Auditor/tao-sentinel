@@ -26,7 +26,7 @@ function AlertsPanelImpl({ alerts }: AlertsPanelProps) {
       <div className="card overflow-hidden">
         {shown.length === 0 ? (
           <div className="px-4 py-6 text-[13px] text-ink-faint">
-            No alerts in the last cycles — quiet network.
+            No alerts in the last few cycles.
           </div>
         ) : (
           <ul>

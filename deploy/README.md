@@ -129,7 +129,7 @@ Keep the plain-HTTP `tao-sentinel.conf` and let an upstream terminate TLS:
 
 ## 4. Server deployments: build from source (default) or pull from GHCR
 
-The default deployment strategy is **git pull + build on the server** — the
+The default deployment strategy is git pull plus a build on the server. The
 repo is public, so this needs no registry credentials at all:
 
 ```bash
@@ -140,8 +140,8 @@ docker compose up -d --build
 ```
 
 Tip: put `TAOSTATS_API_KEY=...` in a `.env` file next to `compose.yaml`
-(gitignored; docker compose reads it automatically) instead of exporting it —
-non-interactive SSH sessions don't load `.bashrc` exports.
+(gitignored; docker compose reads it automatically) instead of exporting it,
+because non-interactive SSH sessions don't load `.bashrc` exports.
 
 CI also publishes an image to GHCR on every push to `main`
 (`ghcr.io/<lowercased-owner>/tao-sentinel:latest` and `:<git-sha>`), but note

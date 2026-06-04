@@ -28,7 +28,7 @@ function SparklineImpl({
 }: SparklineProps) {
   const gradId = useId();
   if (!data || data.length === 0) {
-    return <span className="text-ink-faint">—</span>;
+    return <span className="text-ink-faint">-</span>;
   }
 
   const dir = seriesDirection(data);

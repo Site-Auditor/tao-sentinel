@@ -32,9 +32,9 @@ function ErrorCard({ onRetry }: { onRetry: () => void }) {
   return (
     <main className="max-w-[1200px] mx-auto px-5 pt-16 flex justify-center">
       <div className="bg-surface border border-line rounded-lg px-6 py-8 text-center max-w-sm">
-        <div className="text-ink font-medium">Couldn’t load status.</div>
+        <div className="text-ink font-medium">Could not load the dashboard.</div>
         <div className="text-ink-dim text-[13px] mt-1">
-          The dashboard API didn’t respond.
+          The API did not respond. Check that the server is running.
         </div>
         <button
           type="button"
@@ -83,13 +83,6 @@ export default function Dashboard() {
         <WatchlistStrip rows={subnets} />
 
         <div className="flex flex-col gap-3">
-          {meta.provisional ? (
-            <div className="border-l-2 border-warn bg-surface px-3 py-2 text-[12.5px] text-ink-dim rounded-r">
-              Provisional scores exclude validator concentration — treat grades
-              as directional until full data lands.
-            </div>
-          ) : null}
-
           <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
             <SubnetsTable rows={subnets} />
             <div className="flex flex-col gap-6">
@@ -100,8 +93,8 @@ export default function Dashboard() {
         </div>
 
         <footer className="text-ink-faint text-[12px] border-t border-line pt-4">
-          data: taostats · refreshed every 5m · concentration shown as risk
-          warnings, not scored ·{" "}
+          Data from Taostats, refreshed every 5 minutes. Concentration
+          appears as warnings and does not affect scores.{" "}
           <a
             href={REPO_URL}
             className="text-ink-faint hover:text-accent transition-colors"

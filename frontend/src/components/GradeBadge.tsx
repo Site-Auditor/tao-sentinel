@@ -29,7 +29,7 @@ function GradeBadgeImpl({ grade, provisional }: GradeBadgeProps) {
       {provisional ? (
         <sup
           className="text-[8px] ml-px"
-          title="Provisional — concentration-blind score"
+          title="Provisional score"
         >
           *
         </sup>

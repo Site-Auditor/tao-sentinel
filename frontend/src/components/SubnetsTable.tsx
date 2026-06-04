@@ -165,7 +165,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
               title={r.name ?? undefined}
               className="block truncate max-w-[min(120px,26vw)] sm:max-w-[180px] xl:max-w-[230px] font-medium text-ink group-hover:text-accent transition-colors"
             >
-              {r.name ?? "—"}
+              {r.name ?? "-"}
             </Link>
           );
         },
@@ -234,7 +234,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
         cell: (c) => {
           const w = c.row.original.warnings;
           if (w.length === 0) {
-            return <span className="text-ink-faint">—</span>;
+            return <span className="text-ink-faint">-</span>;
           }
           return (
             <span
@@ -478,7 +478,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                                 onClick={(e) => e.stopPropagation()}
                                 className="text-accent text-[12px] hover:underline"
                               >
-                                Full details →
+                                View full details
                               </Link>
                             </div>
                           </div>
