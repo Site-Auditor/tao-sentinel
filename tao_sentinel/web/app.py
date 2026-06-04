@@ -239,6 +239,17 @@ class _LRUTTLCache:
         self._store: "OrderedDict[str, tuple[float, Any]]" = OrderedDict()
         self._lock = threading.Lock()
 
+    def invalidate(self, key: str) -> None:
+        """Drop one entry so the next request recomputes it.
+
+        Used to keep DEGRADED detail results (validator fetch failed under
+        upstream rate-limiting) from living out the full TTL: the page renders
+        what it has once, and the next view retries instead of presenting the
+        failure as fact for an hour.
+        """
+        with self._lock:
+            self._store.pop(key, None)
+
     def get(self, key: str, loader: Callable[[], Any]) -> Any:
         """Return the cached value for ``key``, recomputing it if stale.
 
@@ -292,6 +303,10 @@ class _ValidatorMemoClient:
         self._client = client
         self._validators: dict[int, list] = {}
 
+    #: Set when any underlying validator fetch raised; consumers mark their
+    #: results degraded so the cache layer can shorten their lifetime.
+    fetch_failed: bool = False
+
     def get_validators(self, netuid: int) -> list:
         """Return the (memoized) validator list for ``netuid``.
 
@@ -303,6 +318,7 @@ class _ValidatorMemoClient:
                 self._validators[netuid] = self._client.get_validators(netuid)
             except TaostatsError:
                 logger.warning("Validator fetch failed for netuid %s.", netuid)
+                self.fetch_failed = True
                 self._validators[netuid] = []
         return self._validators[netuid]
 
@@ -771,6 +787,11 @@ def create_app(
         spark = _pool_spark(netuid)
         spark_change_pct = _pct_change(spark) if spark else None
 
+        # When the validator fetch failed (e.g. upstream 429), the result is
+        # honest-but-degraded; flag it so the cache evicts it immediately
+        # instead of freezing the failure for the full detail TTL.
+        degraded = memo.fetch_failed
+
         pool_detail: Optional[dict] = None
         if pool is not None:
             pool_detail = {
@@ -791,6 +812,10 @@ def create_app(
             "spark": spark,
             "spark_change_pct": spark_change_pct,
             "validators": validators_out,
+            # True when the validator fetch failed (upstream rate-limiting):
+            # the cache layer evicts such results immediately so the next view
+            # retries instead of freezing the failure for the detail TTL.
+            "degraded": degraded,
         }
 
     def _known_netuids() -> set[int]:
@@ -817,7 +842,13 @@ def create_app(
         """
         if netuid not in _known_netuids():
             return None
-        return detail_cache.get(f"detail:{netuid}", lambda: _load_subnet_detail(netuid))
+        key = f"detail:{netuid}"
+        detail = detail_cache.get(key, lambda: _load_subnet_detail(netuid))
+        if detail is not None and detail.get("degraded"):
+            # Serve what we have ONCE, but do not let a rate-limited snapshot
+            # masquerade as the subnet's state for the next hour.
+            detail_cache.invalidate(key)
+        return detail
 
     # ---- HTML surface -----------------------------------------------------
     # When the React SPA build is present (tao_sentinel/web/static, emitted by

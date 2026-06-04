@@ -539,3 +539,36 @@ def test_ttl_cache_keeps_stale_on_refresh_failure():
     state["fail"] = True
     assert cache.get("k", loader) == "good"    # stale survives the failure
     assert cache.get("k", loader) == "good"    # and keeps being served
+
+
+def test_degraded_detail_is_not_cached_for_the_full_ttl(monkeypatch):
+    """A detail whose validator fetch failed serves once, then retries.
+
+    Regression: under upstream 429s the detail cache froze 'No validator
+    data' (and the resulting F grade) for the full 1h TTL.
+    """
+
+    class FlakyValidatorsClient(_SpyClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_validators = True
+
+        def get_validators(self, netuid: int):  # type: ignore[override]
+            self.get_validators_calls += 1
+            if self.fail_validators:
+                raise TaostatsError(429, "Rate Limited")
+            return super().get_validators(netuid)
+
+    flaky = FlakyValidatorsClient()
+    _install(monkeypatch, flaky)
+    app = create_app(config_path=None, mock=True)
+    with TestClient(app) as client:
+        first = client.get("/api/subnet/64").json()
+        assert first["degraded"] is True
+        assert first["validators"] == []
+
+        # Upstream recovers; the degraded snapshot must NOT still be served.
+        flaky.fail_validators = False
+        second = client.get("/api/subnet/64").json()
+        assert second["degraded"] is False
+        assert len(second["validators"]) > 0

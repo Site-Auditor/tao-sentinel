@@ -187,7 +187,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
   return (
     <section>
       <div className="flex flex-wrap items-center gap-3 mb-3">
-        <label className="relative inline-flex items-center">
+        <label className="relative inline-flex items-center w-full sm:w-auto">
           <svg
             className="absolute left-2.5 w-3.5 h-3.5 text-ink-faint pointer-events-none"
             viewBox="0 0 16 16"
@@ -204,7 +204,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
             placeholder="Search subnets…"
-            className="bg-surface border border-line rounded-md pl-8 pr-3 py-1.5 w-60 placeholder-ink-faint focus:border-accent outline-none text-[13px] transition-colors"
+            className="bg-surface border border-line rounded-md pl-8 pr-3 py-1.5 w-full sm:w-60 placeholder-ink-faint focus:border-accent outline-none text-[13px] transition-colors"
           />
         </label>
         <div className="flex items-center gap-1.5">
