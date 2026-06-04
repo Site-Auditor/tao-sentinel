@@ -4,10 +4,15 @@ import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
+  getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import type { SortingState, VisibilityState } from "@tanstack/react-table";
+import type {
+  PaginationState,
+  SortingState,
+  VisibilityState,
+} from "@tanstack/react-table";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import type { SubnetRow } from "../lib/api";
 import { fmtCount, fmtPct, fmtPrice, fmtTao } from "../lib/format";
@@ -25,6 +30,23 @@ const gradeVar: Record<Grade, string> = {
 };
 
 const col = createColumnHelper<SubnetRow>();
+
+/** Windowed page list: 1 … c-1 c c+1 … N (0-based in, 0-based out). */
+function pageWindow(current: number, total: number): Array<number | "…"> {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i);
+  const items: Array<number | "…"> = [0];
+  if (current > 2) items.push("…");
+  for (
+    let i = Math.max(1, current - 1);
+    i <= Math.min(total - 2, current + 1);
+    i++
+  ) {
+    items.push(i);
+  }
+  if (current < total - 3) items.push("…");
+  items.push(total - 1);
+  return items;
+}
 
 interface SubnetsTableProps {
   rows: SubnetRow[];
@@ -61,6 +83,10 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
   ]);
   const [query, setQuery] = useState("");
   const [activeGrades, setActiveGrades] = useState<Set<Grade>>(new Set());
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: 25,
+  });
   const navigate = useNavigate();
 
   // Columns adapt to the table's EFFECTIVE width, not just the viewport:
@@ -238,10 +264,13 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
   const table = useReactTable({
     data: filtered,
     columns,
-    state: { sorting, columnVisibility },
+    state: { sorting, columnVisibility, pagination },
     onSortingChange: setSorting,
+    onPaginationChange: setPagination,
+    autoResetPageIndex: true, // back to page 1 when data/filters change
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
   });
 
   const toggleGrade = (g: Grade) => {
@@ -251,6 +280,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
       else next.add(g);
       return next;
     });
+    setPagination((p) => ({ ...p, pageIndex: 0 }));
   };
 
   // numeric columns are right-aligned
@@ -283,7 +313,10 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
           <input
             type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setPagination((p) => ({ ...p, pageIndex: 0 }));
+          }}
             placeholder="Search subnets…"
             className="bg-surface border border-line rounded-md pl-8 pr-3 py-1.5 w-full sm:w-60 placeholder-ink-faint focus:border-accent outline-none text-[13px] transition-colors"
           />
@@ -467,6 +500,93 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
               ) : null}
             </tbody>
           </table>
+
+          {/* ---- pagination footer ---- */}
+          {filtered.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-3 px-3 py-2.5 border-t border-line text-[12px]">
+              <span className="text-ink-faint tnum">
+                {pagination.pageIndex * pagination.pageSize + 1}–
+                {Math.min(
+                  (pagination.pageIndex + 1) * pagination.pageSize,
+                  filtered.length,
+                )}{" "}
+                of {filtered.length}
+              </span>
+
+              <div className="flex items-center gap-1 ml-auto">
+                <button
+                  type="button"
+                  aria-label="Previous page"
+                  onClick={() => table.previousPage()}
+                  disabled={!table.getCanPreviousPage()}
+                  className="w-7 h-7 rounded-md border border-line text-ink-dim hover:border-line-2 hover:text-ink disabled:opacity-35 disabled:pointer-events-none transition-colors"
+                >
+                  ‹
+                </button>
+                <span className="hidden sm:flex items-center gap-1">
+                  {pageWindow(
+                    pagination.pageIndex,
+                    table.getPageCount(),
+                  ).map((it, i) =>
+                    it === "…" ? (
+                      <span key={`e${i}`} className="px-1 text-ink-faint">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={it}
+                        type="button"
+                        onClick={() => table.setPageIndex(it)}
+                        aria-current={
+                          it === pagination.pageIndex ? "page" : undefined
+                        }
+                        className={[
+                          "min-w-7 h-7 px-1.5 rounded-md border tnum transition-colors",
+                          it === pagination.pageIndex
+                            ? "border-accent/60 text-accent"
+                            : "border-line text-ink-dim hover:border-line-2 hover:text-ink",
+                        ].join(" ")}
+                      >
+                        {it + 1}
+                      </button>
+                    ),
+                  )}
+                </span>
+                <span className="sm:hidden text-ink-dim tnum px-1.5">
+                  {pagination.pageIndex + 1} / {table.getPageCount()}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Next page"
+                  onClick={() => table.nextPage()}
+                  disabled={!table.getCanNextPage()}
+                  className="w-7 h-7 rounded-md border border-line text-ink-dim hover:border-line-2 hover:text-ink disabled:opacity-35 disabled:pointer-events-none transition-colors"
+                >
+                  ›
+                </button>
+              </div>
+
+              <label className="flex items-center gap-1.5 text-ink-faint">
+                <span className="hidden sm:inline">rows</span>
+                <select
+                  value={pagination.pageSize}
+                  onChange={(e) =>
+                    setPagination({
+                      pageIndex: 0,
+                      pageSize: Number(e.target.value),
+                    })
+                  }
+                  className="bg-surface border border-line rounded-md px-1.5 py-1 text-ink-dim focus:border-accent outline-none"
+                >
+                  {[25, 50, 100].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : null}
       </div>
     </section>
   );
