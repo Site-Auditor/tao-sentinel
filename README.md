@@ -191,6 +191,13 @@ longer **6-hour** TTL cache because each one costs a history call, and the per-s
 results are cached for **1 hour** behind an LRU cap of **16** entries so arbitrary
 `/subnet/{netuid}` traffic can never run away with the budget.
 
+When multiple processes share one API key (the compose stack runs a watcher **and** a
+dashboard), they coordinate through a **cross-process token bucket** — a `flock`-guarded
+`ratelimit.json` kept next to the state file — so the pair stays at the real 5 calls/min
+instead of each running its own bucket and bursting to double that (which draws 429s,
+most visibly at deploy time when the startup cache warm and the first watcher tick
+coincide). Ad-hoc CLI runs on the same machine join the same bucket automatically.
+
 ---
 
 ## Configuration

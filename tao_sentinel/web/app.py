@@ -508,7 +508,9 @@ def create_app(
     from ..api import make_client
 
     config = _load_config(config_path)
-    client = make_client(config.api_key, mock)
+    client = make_client(
+        config.api_key, mock, rate_limit_file=config.rate_limit_path()
+    )
     scanner = SubnetScanner(client)
     tracker = PortfolioTracker(client)
     coldkey = _first_watched_coldkey(config)

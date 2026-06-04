@@ -8,6 +8,9 @@
 # Where the watch engine persists state between polls. /data is the named
 # `sentinel-state` volume shared by the watcher and dashboard services.
 state_path: /data/state.json
+# A cross-process rate-limit file (ratelimit.json) is kept in the same
+# directory automatically, so the watcher and dashboard containers share ONE
+# 5/min token bucket for the API key instead of bursting past it together.
 
 # Taostats API key. The "env:VARNAME" form reads the value from the named
 # environment variable at load time; compose passes TAOSTATS_API_KEY through

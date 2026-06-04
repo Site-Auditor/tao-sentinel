@@ -445,3 +445,11 @@ def test_example_config_loads_with_new_features(tmp_path, monkeypatch):
     types_present = {w.type for w in config.watches}
     assert {"tao_price", "market_cap", "registration_cost",
             "new_subnet", "price_trend"} <= types_present
+
+
+def test_rate_limit_path_lives_next_to_state_file(tmp_path):
+    """The shared limiter file derives from state_path's directory."""
+    from tao_sentinel.config import Config
+
+    cfg = Config(state_path=str(tmp_path / "deep" / "state.json"))
+    assert cfg.rate_limit_path() == str(tmp_path / "deep" / "ratelimit.json")

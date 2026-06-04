@@ -19,12 +19,14 @@ them.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional, Union
 
 import httpx
 
@@ -72,6 +74,12 @@ MAX_RETRIES = 2
 #: Fallback backoff (seconds) per retry attempt when the server gives no usable
 #: ``Retry-After`` header: 2s before the first retry, 4s before the second.
 RETRY_BACKOFF_SECONDS = (2.0, 4.0)
+
+#: Fallback backoff for 429 responses specifically. The free tier admits
+#: 5/min (one token every ~12s), so retrying a rate-limit rejection after
+#: 2s/4s lands inside the SAME closed window and burns the retry. Wait at
+#: least a token interval.
+RETRY_BACKOFF_429_SECONDS = (15.0, 30.0)
 
 #: Cap (seconds) applied to a server-provided integer ``Retry-After`` so a
 #: hostile/large value cannot stall a command indefinitely.
@@ -545,6 +553,111 @@ class RateLimiter:
                 self._sleep(wait)
 
 
+class FileRateLimiter:
+    """Cross-PROCESS blocking token bucket coordinated through a locked file.
+
+    The in-process :class:`RateLimiter` cannot see sibling processes: the
+    watcher and dashboard containers each ran their own 5/min bucket against
+    the SAME API key, so a deploy (startup cache warm + first watcher tick)
+    burst to ~10/min and drew 429s from Taostats. This limiter shares one
+    token bucket between every process that points at the same state file --
+    in the compose stack that is ``/data/ratelimit.json`` on the shared
+    ``sentinel-state`` volume.
+
+    Design notes:
+
+    * Coordination is ``fcntl.flock`` on the state file; the lock is held
+      only for the read-refill-take-write critical section, NEVER while
+      sleeping, so a waiting process cannot starve the others.
+    * The clock is wall time (``time.time``): monotonic clocks have
+      per-process origins and cannot be compared across processes. Backward
+      clock jumps are clamped to zero elapsed.
+    * A corrupt/empty state file resets to a full bucket (worst case: one
+      extra burst, then correct behaviour).
+    * An in-process thread lock additionally serialises threads within one
+      process so two threads never interleave on the same file descriptor.
+
+    Interface-compatible with :class:`RateLimiter` (``acquire()``), so
+    :class:`TaostatsClient` accepts either.
+    """
+
+    def __init__(
+        self,
+        calls_per_min: int,
+        path: str,
+        clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Initialise the shared limiter.
+
+        Args:
+            calls_per_min: Bucket capacity and refill rate per minute.
+            path: State-file path shared by all coordinating processes.
+            clock: Wall-clock callable (injectable for tests).
+            sleep: Sleep callable (injectable for tests).
+
+        Raises:
+            ValueError: If ``calls_per_min`` is not positive.
+            OSError: If the state file's directory cannot be created.
+        """
+        if calls_per_min <= 0:
+            raise ValueError("calls_per_min must be positive")
+        self._rate = calls_per_min / 60.0
+        self._capacity = float(calls_per_min)
+        self._path = Path(path).expanduser()
+        self._clock = clock
+        self._sleep = sleep
+        self._thread_lock = threading.Lock()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Touch with private perms; harmless if it already exists.
+        self._path.touch(mode=0o600, exist_ok=True)
+
+    def acquire(self) -> None:
+        """Block until a shared token is available, then consume it."""
+        while True:
+            with self._thread_lock:
+                wait = self._try_take()
+            if wait <= 0:
+                return
+            self._sleep(wait)
+
+    def _try_take(self) -> float:
+        """Attempt to take one token under the file lock.
+
+        Returns:
+            ``0.0`` on success, else the seconds to sleep before retrying.
+        """
+        import fcntl  # Linux/macOS only; the deployment targets are Linux.
+
+        with open(self._path, "r+", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                raw = fh.read()
+                now = self._clock()
+                try:
+                    state = json.loads(raw) if raw.strip() else {}
+                    tokens = float(state["tokens"])
+                    last = float(state["last"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    tokens, last = self._capacity, now
+                elapsed = max(0.0, now - last)
+                tokens = min(self._capacity, tokens + elapsed * self._rate)
+
+                took = tokens >= 1.0
+                if took:
+                    tokens -= 1.0
+                fh.seek(0)
+                fh.truncate()
+                json.dump({"tokens": tokens, "last": now}, fh)
+                if took:
+                    return 0.0
+                # Time until one full token regenerates (floor keeps retries
+                # from busy-spinning when the deficit is tiny).
+                return max(0.05, (1.0 - tokens) / self._rate)
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 # --------------------------------------------------------------------------- #
 # HTTP client
 # --------------------------------------------------------------------------- #
@@ -579,7 +692,7 @@ class TaostatsClient:
         rate_limit_per_min: int = DEFAULT_RATE_LIMIT_PER_MIN,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         client: Optional[httpx.Client] = None,
-        rate_limiter: Optional[RateLimiter] = None,
+        rate_limiter: Optional[Union[RateLimiter, FileRateLimiter]] = None,
         retry_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.api_key = api_key
@@ -667,16 +780,23 @@ class TaostatsClient:
         """Compute the wait before a retry, honoring ``Retry-After``.
 
         A valid integer ``Retry-After`` (seconds) wins, capped at
-        :data:`MAX_RETRY_AFTER_SECONDS`; otherwise fall back to the per-attempt
-        :data:`RETRY_BACKOFF_SECONDS`.
+        :data:`MAX_RETRY_AFTER_SECONDS`. Otherwise the fallback depends on the
+        status: 429s wait :data:`RETRY_BACKOFF_429_SECONDS` (at least one
+        ~12s token interval, so the retry lands in a fresh rate window) while
+        transient 5xx use the short :data:`RETRY_BACKOFF_SECONDS`.
         """
         retry_after = response.headers.get("Retry-After")
         if retry_after is not None:
             text = retry_after.strip()
             if text.isdigit():
                 return float(min(int(text), MAX_RETRY_AFTER_SECONDS))
-        index = min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)
-        return RETRY_BACKOFF_SECONDS[index]
+        schedule = (
+            RETRY_BACKOFF_429_SECONDS
+            if response.status_code == 429
+            else RETRY_BACKOFF_SECONDS
+        )
+        index = min(attempt, len(schedule) - 1)
+        return schedule[index]
 
     @staticmethod
     def _safe_body(response: httpx.Response) -> Any:
@@ -1142,7 +1262,11 @@ class MockTaostatsClient:
 # --------------------------------------------------------------------------- #
 
 
-def make_client(api_key: Optional[str], mock: bool):
+def make_client(
+    api_key: Optional[str],
+    mock: bool,
+    rate_limit_file: Optional[str] = None,
+):
     """Build a Taostats client.
 
     Returns a :class:`MockTaostatsClient` when ``mock`` is set or when no API
@@ -1152,6 +1276,13 @@ def make_client(api_key: Optional[str], mock: bool):
     Args:
         api_key: Raw Taostats API key, or ``None``.
         mock: Force the mock client.
+        rate_limit_file: Optional path to a CROSS-PROCESS rate-limit state
+            file. When given, every process pointing at the same file (the
+            watcher and dashboard containers share one via the state volume)
+            shares ONE token bucket for the API key instead of each running
+            its own — separate buckets summed past the real 5/min limit and
+            drew 429s at deploy time. Falls back to the in-process limiter
+            (with a warning) if the file cannot be set up.
 
     Returns:
         A :class:`MockTaostatsClient` or :class:`TaostatsClient`.
@@ -1160,4 +1291,18 @@ def make_client(api_key: Optional[str], mock: bool):
         if not mock:
             logger.info("No API key provided; falling back to MockTaostatsClient.")
         return MockTaostatsClient()
+
+    limiter: Optional[Union[RateLimiter, FileRateLimiter]] = None
+    if rate_limit_file:
+        try:
+            limiter = FileRateLimiter(DEFAULT_RATE_LIMIT_PER_MIN, rate_limit_file)
+        except (OSError, ImportError) as exc:
+            logger.warning(
+                "Shared rate-limit file %r unusable (%s); "
+                "falling back to an in-process limiter.",
+                rate_limit_file,
+                exc,
+            )
+    if limiter is not None:
+        return TaostatsClient(api_key, rate_limiter=limiter)
     return TaostatsClient(api_key)

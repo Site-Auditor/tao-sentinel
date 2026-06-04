@@ -188,6 +188,22 @@ class Config(BaseModel):
     alert_cooldown_minutes: int = 60
     watchlist: list[int] = Field(default_factory=list)
 
+    def rate_limit_path(self) -> str:
+        """Path of the cross-process rate-limit state file.
+
+        Lives next to the engine state file so every process configured with
+        the same ``state_path`` (the watcher and dashboard containers share
+        one via the ``sentinel-state`` volume) coordinates on ONE token
+        bucket for the shared API key. Separate per-process buckets summed
+        past the real 5/min limit and drew 429s whenever both were active.
+
+        Returns:
+            The state-file path with ``ratelimit.json`` as the filename.
+        """
+        from pathlib import Path
+
+        return str(Path(self.state_path).expanduser().parent / "ratelimit.json")
+
     @field_validator("alert_cooldown_minutes")
     @classmethod
     def _validate_cooldown(cls, value: int) -> int:

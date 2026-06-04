@@ -28,7 +28,7 @@ from rich.table import Table
 
 from . import __version__
 from .api import TaostatsError, make_client
-from .config import load_config, write_example_config
+from .config import Config, load_config, write_example_config
 from .portfolio import PortfolioTracker
 from .scanner import SubnetScanner
 
@@ -245,7 +245,9 @@ def watch(
     except _USER_ERRORS as exc:
         raise _fail(f"failed to load config {config!r}: {exc}") from exc
 
-    client = make_client(_resolved_api_key(cfg), mock=mock)
+    client = make_client(
+        _resolved_api_key(cfg), mock=mock, rate_limit_file=cfg.rate_limit_path()
+    )
     try:
         if no_notify:
             notifiers = [ConsoleNotifier(console=console)]
@@ -316,7 +318,11 @@ def portfolio(
     except _USER_ERRORS as exc:
         raise _fail(f"failed to load config {config!r}: {exc}") from exc
 
-    client = make_client(_resolved_api_key(cfg), mock=mock)
+    client = make_client(
+        _resolved_api_key(cfg),
+        mock=mock,
+        rate_limit_file=(cfg or Config()).rate_limit_path(),
+    )
     try:
         tracker = PortfolioTracker(client)
         result = tracker.get_portfolio(coldkey)
@@ -393,7 +399,11 @@ def scan(
     except _USER_ERRORS as exc:
         raise _fail(f"failed to load config {config!r}: {exc}") from exc
 
-    client = make_client(_resolved_api_key(cfg), mock=mock)
+    client = make_client(
+        _resolved_api_key(cfg),
+        mock=mock,
+        rate_limit_file=(cfg or Config()).rate_limit_path(),
+    )
     try:
         scanner = SubnetScanner(client)
         reports = scanner.scan(netuid)
