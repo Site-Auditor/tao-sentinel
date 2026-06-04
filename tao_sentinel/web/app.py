@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from ..api import TaostatsError
@@ -71,6 +72,10 @@ DASHBOARD_REFRESH_SECONDS = 300
 
 #: Directory holding the Jinja2 templates shipped with the package.
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+
+#: Directory holding the built React SPA (emitted by `npm run build` in
+#: frontend/; absent in source checkouts without node -> Jinja fallback).
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 #: Number of recent alerts surfaced on the dashboard.
 _MAX_RECENT_ALERTS = 25
@@ -814,21 +819,48 @@ def create_app(
             return None
         return detail_cache.get(f"detail:{netuid}", lambda: _load_subnet_detail(netuid))
 
-    @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request) -> HTMLResponse:
-        """Render the HTML dashboard."""
-        status = _build_status()
-        return templates.TemplateResponse(
-            request,
-            "dashboard.html",
-            {
-                "subnets": status["subnets"],
-                "portfolio": status["portfolio"],
-                "alerts": status["alerts"],
-                "meta": status["meta"],
-                "refresh_seconds": DASHBOARD_REFRESH_SECONDS,
-            },
+    # ---- HTML surface -----------------------------------------------------
+    # When the React SPA build is present (tao_sentinel/web/static, emitted by
+    # `npm run build` in frontend/ and shipped in the wheel/Docker image), it
+    # IS the dashboard: / and /subnet/{netuid} serve the SPA shell and the
+    # client renders from the JSON API. Without the build (source checkout
+    # with no node, tests), the legacy server-rendered Jinja templates serve
+    # the same data so the package still works standalone.
+    _spa_index = _STATIC_DIR / "index.html"
+    _serve_spa = _spa_index.is_file()
+    if _serve_spa:
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_STATIC_DIR / "assets")),
+            name="assets",
         )
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        def spa_root() -> FileResponse:
+            """Serve the SPA shell; data loads client-side from /api/status."""
+            return FileResponse(_spa_index)
+
+        @app.get("/favicon.svg", include_in_schema=False)
+        def spa_favicon() -> FileResponse:
+            return FileResponse(_STATIC_DIR / "favicon.svg")
+
+    else:
+
+        @app.get("/", response_class=HTMLResponse)
+        def dashboard(request: Request) -> HTMLResponse:
+            """Render the legacy server-side HTML dashboard."""
+            status = _build_status()
+            return templates.TemplateResponse(
+                request,
+                "dashboard.html",
+                {
+                    "subnets": status["subnets"],
+                    "portfolio": status["portfolio"],
+                    "alerts": status["alerts"],
+                    "meta": status["meta"],
+                    "refresh_seconds": DASHBOARD_REFRESH_SECONDS,
+                },
+            )
 
     @app.get("/healthz")
     def healthz() -> JSONResponse:
@@ -846,25 +878,44 @@ def create_app(
         """Return the dashboard data as JSON."""
         return JSONResponse(_build_status())
 
-    @app.get("/subnet/{netuid}", response_class=HTMLResponse)
-    def subnet_detail_html(request: Request, netuid: int) -> HTMLResponse:
-        """Render the authoritative single-subnet detail page (404 if unknown).
+    if _serve_spa:
 
-        The detail JSON payload is flattened into the ``subnet`` context object
-        the ``subnet.html`` template (owned by the frontend cluster) expects:
-        score/grade/provisional/warnings hoisted out of the nested ``report``,
-        alongside ``pool``, ``spark``, ``spark_change_pct`` and ``validators``.
-        An unknown netuid renders a small standalone 404 page (the template has
-        no not-found branch, so we do not invoke it here).
-        """
-        detail = _subnet_detail(netuid)
-        if detail is None:
-            return HTMLResponse(_not_found_html(netuid), status_code=404)
-        return templates.TemplateResponse(
-            request,
-            "subnet.html",
-            {"subnet": _detail_template_context(detail), "meta": _detail_meta()},
+        @app.get(
+            "/subnet/{netuid}",
+            response_class=HTMLResponse,
+            include_in_schema=False,
         )
+        def spa_subnet(netuid: int) -> FileResponse:
+            """Serve the SPA shell for client-side routed detail pages.
+
+            The SPA fetches ``/api/subnet/{netuid}`` itself and renders its own
+            not-found state, so even an unknown netuid gets the shell (HTTP 200
+            with a client-rendered 404 view — standard SPA routing semantics;
+            the JSON API remains the authoritative 404).
+            """
+            return FileResponse(_spa_index)
+
+    else:
+
+        @app.get("/subnet/{netuid}", response_class=HTMLResponse)
+        def subnet_detail_html(request: Request, netuid: int) -> HTMLResponse:
+            """Render the legacy single-subnet detail page (404 if unknown).
+
+            The detail JSON payload is flattened into the ``subnet`` context
+            object the ``subnet.html`` template expects: score/grade/
+            provisional/warnings hoisted out of the nested ``report``,
+            alongside ``pool``, ``spark``, ``spark_change_pct`` and
+            ``validators``. An unknown netuid renders a small standalone 404
+            page (the template has no not-found branch).
+            """
+            detail = _subnet_detail(netuid)
+            if detail is None:
+                return HTMLResponse(_not_found_html(netuid), status_code=404)
+            return templates.TemplateResponse(
+                request,
+                "subnet.html",
+                {"subnet": _detail_template_context(detail), "meta": _detail_meta()},
+            )
 
     @app.get("/api/subnet/{netuid}")
     def subnet_detail_json(netuid: int) -> JSONResponse:

@@ -425,25 +425,29 @@ def test_subnet_detail_lru_eviction(monkeypatch):
         assert spy.get_validators_calls == DETAIL_CACHE_MAX + 2
 
 
-def test_subnet_detail_html_404(monkeypatch):
-    """An unknown netuid HTML detail returns 404 (template owned by frontend).
-
-    Skips when the frontend cluster's ``subnet.html`` template is not present
-    in this standalone run; the integrator runs with it in place.
-    """
+def test_subnet_detail_html_unknown_netuid(monkeypatch):
+    """Unknown netuid: SPA serves the shell (client renders not-found, JSON
+    stays the authoritative 404); the legacy Jinja surface 404s server-side."""
     import pytest
 
-    from tao_sentinel.web.app import _TEMPLATES_DIR
+    from tao_sentinel.web.app import _STATIC_DIR, _TEMPLATES_DIR
 
-    if not (_TEMPLATES_DIR / "subnet.html").exists():
-        pytest.skip("subnet.html not present in standalone run (frontend cluster)")
+    spa = (_STATIC_DIR / "index.html").is_file()
+    if not spa and not (_TEMPLATES_DIR / "subnet.html").exists():
+        pytest.skip("neither SPA build nor subnet.html present")
 
     spy = _SpyClient()
     _install(monkeypatch, spy)
     app = create_app(config_path=None, mock=True)
     with TestClient(app) as client:
         resp = client.get("/subnet/999")
-    assert resp.status_code == 404
+        if spa:
+            assert resp.status_code == 200  # SPA routing semantics
+            assert 'id="root"' in resp.text
+        else:
+            assert resp.status_code == 404
+        # The JSON API is the authoritative 404 either way.
+        assert client.get("/api/subnet/999").status_code == 404
 
 
 def test_subnet_detail_html_ok(monkeypatch):

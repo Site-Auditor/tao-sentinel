@@ -70,3 +70,8 @@ dmypy.json
 sentinel.yaml
 .tao-sentinel/
 compose.override.yaml
+
+# Frontend build artifacts (built by `npm run build` / Docker / CI)
+tao_sentinel/web/static/
+frontend/node_modules/
+frontend/dist/

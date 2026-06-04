@@ -159,7 +159,21 @@ The surviving alerts are then handed to each notifier as a batch:
 tao-sentinel serve --config sentinel.yaml --port 8787 --mock
 ```
 
-Then open <http://localhost:8787>. Routes:
+Then open <http://localhost:8787>.
+
+**Frontend stack:** the dashboard is a React SPA — Vite + TypeScript + Tailwind CSS,
+TanStack Query/Table, TradingView's `lightweight-charts`, self-hosted Inter (no CDNs) —
+served by the same FastAPI process from `tao_sentinel/web/static` (built by `npm run build`
+in `frontend/`; shipped inside the wheel and the Docker image, so end users never need
+node). Source checkouts without the build fall back to a minimal server-rendered page.
+
+```bash
+# frontend development: hot-reload SPA proxied onto a mock API
+tao-sentinel serve --mock --port 8787 &
+cd frontend && npm install && npm run dev
+```
+
+Routes:
 
 - `GET /` — dark single-page dashboard. A pinned **watchlist** section (the netuids in your
   config's `watchlist`) sits above the main table, each with an inline-SVG sparkline of its

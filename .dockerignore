@@ -15,3 +15,8 @@ __pycache__
 *.pyc
 .review*
 nohup.out
+
+# Frontend: sources needed for the image build; artifacts are not.
+frontend/node_modules
+frontend/dist
+tao_sentinel/web/static

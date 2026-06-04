@@ -1,0 +1,54 @@
+import { memo } from "react";
+import { Link } from "react-router-dom";
+import type { StatusMeta } from "../lib/api";
+import { fmtUsd, timeAgo, sparkChangePct } from "../lib/format";
+import { Sparkline } from "./Sparkline";
+import { Delta } from "./Delta";
+
+interface TopBarProps {
+  meta: StatusMeta | null;
+}
+
+function TopBarImpl({ meta }: TopBarProps) {
+  return (
+    <header className="sticky top-0 z-30 backdrop-blur bg-bg/85 border-b border-line">
+      <div className="max-w-[1200px] mx-auto px-5 h-[56px] flex items-center justify-between">
+        <Link
+          to="/"
+          className="font-semibold tracking-tight text-ink text-[15px]"
+        >
+          tao<span className="text-accent">·</span>sentinel
+        </Link>
+
+        {meta ? (
+          <div className="flex items-center gap-5">
+            <div className="flex items-center gap-2">
+              <span className="text-ink-faint text-[11px] uppercase tracking-wide">
+                TAO
+              </span>
+              <span className="font-medium tnum">{fmtUsd(meta.tao_price_usd)}</span>
+              <Sparkline data={meta.tao_price_spark} w={72} h={20} />
+              <Delta value={sparkChangePct(meta.tao_price_spark)} />
+            </div>
+
+            {meta.mock ? (
+              <span className="text-[11px] uppercase tracking-wide border rounded-full px-2 py-0.5 text-warn border-warn/40">
+                Mock
+              </span>
+            ) : (
+              <span className="text-[11px] uppercase tracking-wide border rounded-full px-2 py-0.5 text-up border-up/40">
+                Live
+              </span>
+            )}
+
+            <span className="hidden sm:inline text-ink-faint text-[12px]">
+              updated {timeAgo(meta.generated_at)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </header>
+  );
+}
+
+export const TopBar = memo(TopBarImpl);

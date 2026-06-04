@@ -5,6 +5,20 @@
 # the read-only web dashboard. STOPSIGNAL is SIGINT because the app handles
 # SIGINT cleanly (prints "Stopped.") whereas SIGTERM would hard-kill it.
 
+# ---- frontend stage: build the React SPA -----------------------------------
+FROM node:22-alpine AS frontend
+
+WORKDIR /fe
+
+# Dependency layer first for build caching.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY frontend/ ./
+# Emit to a neutral path (the vite config's relative outDir points outside
+# this stage's context).
+RUN npm run build -- --outDir /out --emptyOutDir
+
 # ---- builder stage: produce a wheel for tao-sentinel -----------------------
 FROM python:3.12-slim AS builder
 
@@ -14,6 +28,9 @@ WORKDIR /build
 # .git, build artifacts, etc. out of the context.
 COPY pyproject.toml README.md LICENSE ./
 COPY tao_sentinel ./tao_sentinel
+# Bundle the built SPA into the package so the wheel ships the dashboard
+# (tao_sentinel/web/static is package-data; the app serves it when present).
+COPY --from=frontend /out ./tao_sentinel/web/static
 
 # Build the project (and its runtime dependencies) into wheels under /wheels.
 RUN pip install --no-cache-dir --upgrade pip wheel \

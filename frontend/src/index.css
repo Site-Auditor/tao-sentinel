@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/* ----------------------------------------------------------------------- */
+/* Design tokens — taostats-inspired: near-black surfaces, hairline borders, */
+/* teal signal accent, green/red reserved exclusively for deltas/severity.   */
+/* ----------------------------------------------------------------------- */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --color-bg: #0a0a0e;
+  --color-surface: #121217;
+  --color-surface-2: #17171e;
+  --color-surface-3: #1e1e27;
+  --color-line: #232330;
+  --color-line-2: #2e2e3d;
+
+  --color-ink: #ecedf2;
+  --color-ink-dim: #9fa3b1;
+  --color-ink-faint: #62677a;
+
+  --color-accent: #2dd4bf;
+  --color-accent-dim: #134e48;
+
+  --color-up: #34d399;
+  --color-down: #fb7185;
+  --color-warn: #fbbf24;
+
+  --color-grade-a: #34d399;
+  --color-grade-b: #a3e635;
+  --color-grade-c: #fbbf24;
+  --color-grade-d: #fb923c;
+  --color-grade-f: #fb7185;
+}
+
+html {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Numbers align in columns everywhere. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Hairline scrollbars that match the theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-2) transparent;
+}
+*::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-2);
+  border-radius: 4px;
+}
+
+/* Subtle skeleton shimmer for loading states. */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.9; }
+}
+.skeleton {
+  background: var(--color-surface-3);
+  border-radius: 4px;
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}

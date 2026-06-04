@@ -579,13 +579,21 @@ def test_watch_once_no_notify_is_console_only(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_dashboard_html_shows_provisional_caveat():
-    """The all-subnets dashboard must surface the provisional-score warning."""
-    from tao_sentinel.web.app import create_app
+def test_dashboard_surfaces_provisional_flag():
+    """The provisional disclosure reaches whichever HTML surface is active.
+
+    With the React build present, / serves the SPA shell and the client
+    renders the caveat from meta.provisional (assert the flag + shell here);
+    without it, the legacy Jinja page must carry the caveat text itself.
+    """
+    from tao_sentinel.web.app import _STATIC_DIR, create_app
 
     with TestClient(create_app(None, mock=True)) as client:
         html = client.get("/").text
-        assert "Provisional scores" in html
+        if (_STATIC_DIR / "index.html").is_file():
+            assert 'id="root"' in html  # SPA shell
+        else:
+            assert "Provisional scores" in html  # legacy server-rendered
         status = client.get("/api/status").json()
         assert status["meta"]["provisional"] is True
 
