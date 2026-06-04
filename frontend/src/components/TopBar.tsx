@@ -12,22 +12,28 @@ interface TopBarProps {
 function TopBarImpl({ meta }: TopBarProps) {
   return (
     <header className="sticky top-0 z-30 backdrop-blur bg-bg/85 border-b border-line">
-      <div className="max-w-[1200px] mx-auto px-5 h-[56px] flex items-center justify-between">
+      <div className="max-w-[1200px] mx-auto px-5 h-[56px] flex items-center justify-between gap-4">
         <Link
           to="/"
-          className="font-semibold tracking-tight text-ink text-[15px]"
+          className="font-semibold tracking-tight text-ink text-[15px] shrink-0"
         >
           tao<span className="text-accent">·</span>sentinel
         </Link>
 
         {meta ? (
-          <div className="flex items-center gap-5">
-            <div className="flex items-center gap-2">
-              <span className="text-ink-faint text-[11px] uppercase tracking-wide">
+          <div className="flex items-center gap-3 sm:gap-5 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="hidden sm:inline text-ink-faint text-[11px] uppercase tracking-wide">
                 TAO
               </span>
-              <span className="font-medium tnum">{fmtUsd(meta.tao_price_usd)}</span>
-              <Sparkline data={meta.tao_price_spark} w={72} h={20} />
+              <span className="font-medium tnum whitespace-nowrap">
+                {fmtUsd(meta.tao_price_usd)}
+              </span>
+              {/* The sparkline is a luxury; price + delta carry the signal
+                  on narrow screens. */}
+              <span className="hidden sm:inline-flex">
+                <Sparkline data={meta.tao_price_spark} w={72} h={20} />
+              </span>
               <Delta value={sparkChangePct(meta.tao_price_spark)} />
             </div>
 

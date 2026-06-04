@@ -213,11 +213,11 @@ export default function Subnet() {
           </span>
         </div>
 
-        <div className="grid lg:grid-cols-[1fr_340px] gap-6">
-          <div className="flex flex-col gap-6">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
+          <div className="flex flex-col gap-6 min-w-0">
             <section>
               <h2 className={SECTION_HEADING}>Price (24h)</h2>
-              <div className="bg-surface border border-line rounded-lg px-3 py-3">
+              <div className="bg-surface border border-line rounded-lg px-3 py-3 overflow-hidden">
                 <PriceChart spark={detail.spark} height={280} />
               </div>
             </section>

@@ -17,7 +17,7 @@ function Skeleton() {
           <div key={i} className="skeleton h-[68px]" />
         ))}
       </div>
-      <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
         <div className="skeleton h-[420px]" />
         <div className="flex flex-col gap-6">
           <div className="skeleton h-[200px]" />
@@ -90,7 +90,7 @@ export default function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+          <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
             <SubnetsTable rows={subnets} />
             <div className="flex flex-col gap-6">
               <AlertsPanel alerts={alerts} />
