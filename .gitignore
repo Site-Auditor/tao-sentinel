@@ -75,3 +75,7 @@ compose.override.yaml
 tao_sentinel/web/static/
 frontend/node_modules/
 frontend/dist/
+
+# The Python packaging "lib/" rule above must not eat the frontend source lib
+!frontend/src/lib/
+!frontend/src/lib/**
