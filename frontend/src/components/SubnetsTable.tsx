@@ -187,13 +187,26 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
   return (
     <section>
       <div className="flex flex-wrap items-center gap-3 mb-3">
-        <input
-          type="text"
+        <label className="relative inline-flex items-center">
+          <svg
+            className="absolute left-2.5 w-3.5 h-3.5 text-ink-faint pointer-events-none"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            aria-hidden="true"
+          >
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="m10.5 10.5 3 3" strokeLinecap="round" />
+          </svg>
+          <input
+            type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search subnets…"
-          className="bg-surface border border-line rounded-md px-3 py-1.5 w-56 placeholder-ink-faint focus:border-accent outline-none text-[13px]"
-        />
+            placeholder="Search subnets…"
+            className="bg-surface border border-line rounded-md pl-8 pr-3 py-1.5 w-60 placeholder-ink-faint focus:border-accent outline-none text-[13px] transition-colors"
+          />
+        </label>
         <div className="flex items-center gap-1.5">
           {GRADES.map((g) => {
             const active = activeGrades.has(g);
@@ -203,7 +216,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                 key={g}
                 type="button"
                 onClick={() => toggleGrade(g)}
-                className="text-[12px] font-semibold rounded-full border px-2 py-0.5 transition-colors"
+                className="text-[12px] font-semibold rounded-full border border-line px-2.5 py-0.5 transition-all hover:border-line-2 active:scale-95"
                 style={
                   active
                     ? {
@@ -224,13 +237,13 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
         </span>
       </div>
 
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
+      <div className="card overflow-hidden rise" style={{ "--i": 4 } as React.CSSProperties}>
         {/* The card itself is the scroll container (both axes); the thead
             sticks to ITS top — sticky inside an overflow ancestor is
             relative to that ancestor, so a viewport offset like top-[56px]
             renders the header pushed down OVER the first rows instead. */}
         <div className="overflow-auto max-h-[calc(100vh-230px)] min-h-[320px]">
-          <table className="w-full border-collapse text-[13px]">
+          <table className="w-full border-collapse text-[12.5px]">
             <thead>
               {table.getHeaderGroups().map((hg) => (
                 <tr key={hg.id}>
@@ -248,7 +261,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                         className={[
                           "sticky top-0 z-10 bg-surface-2/95 backdrop-blur",
                           "text-[11px] uppercase tracking-wider text-ink-faint font-medium",
-                          "py-2.5 px-3 whitespace-nowrap border-b border-line",
+                          "py-2.5 px-2.5 whitespace-nowrap border-b border-line",
                           right ? "text-right" : "text-left",
                           sortable ? "cursor-pointer select-none" : "",
                         ].join(" ")}
@@ -278,7 +291,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
               {table.getRowModel().rows.map((row) => (
                 <tr
                   key={row.id}
-                  className="group h-[42px] border-b border-line last:border-b-0 hover:bg-surface-2 transition-colors"
+                  className="group row-hover h-[42px] border-b border-line last:border-b-0 hover:bg-surface-2"
                 >
                   {row.getVisibleCells().map((cell) => {
                     const right = rightAligned.has(cell.column.id);
@@ -286,7 +299,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                       <td
                         key={cell.id}
                         className={[
-                          "px-3 whitespace-nowrap",
+                          "px-2.5 whitespace-nowrap",
                           right ? "text-right tnum" : "text-left",
                         ].join(" ")}
                       >
@@ -303,7 +316,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                 <tr>
                   <td
                     colSpan={columns.length}
-                    className="px-3 py-8 text-center text-ink-faint"
+                    className="px-2.5 py-8 text-center text-ink-faint"
                   >
                     No subnets match your filters.
                   </td>

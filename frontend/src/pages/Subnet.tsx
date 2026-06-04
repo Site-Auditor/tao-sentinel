@@ -22,30 +22,42 @@ function isProvisional(metrics: Record<string, unknown>): boolean {
   return metrics.provisional === true;
 }
 
-/** Metric keys already surfaced elsewhere — keep the breakdown focused. */
-const HIDDEN_METRIC_KEYS = new Set(["provisional"]);
+/** Curated, human-labelled metric rows — raw engine keys stay in the API.
+ * Order is editorial: population first, then economics, then concentration. */
+const METRIC_PRESENTATION: Array<{
+  key: string;
+  label: string;
+  format: (v: number) => string;
+}> = [
+  { key: "n_active_validators", label: "Active validators", format: (v) => v.toLocaleString("en-US") },
+  { key: "n_validators", label: "Validator slots", format: (v) => v.toLocaleString("en-US") },
+  { key: "n_miners", label: "Active miners", format: (v) => v.toLocaleString("en-US") },
+  { key: "emission_pct", label: "Emission share", format: (v) => `${v.toFixed(2)}%` },
+  { key: "price_tao", label: "Alpha price", format: (v) => `${fmtPrice(v)} τ` },
+  { key: "market_cap_tao", label: "Market cap", format: (v) => fmtTao(v, true) },
+  { key: "top1_share", label: "Top validator stake", format: (v) => fmtPct(v * 100) },
+  { key: "top5_share", label: "Top 5 validators stake", format: (v) => fmtPct(v * 100) },
+];
 
 function ScoreBreakdown({ metrics }: { metrics: Record<string, unknown> }) {
-  const numeric = Object.entries(metrics).filter(
-    ([k, v]) => typeof v === "number" && !HIDDEN_METRIC_KEYS.has(k),
-  ) as [string, number][];
+  const rows = METRIC_PRESENTATION.flatMap((m) => {
+    const raw = metrics[m.key];
+    if (typeof raw !== "number") return [];
+    return [{ label: m.label, value: m.format(raw) }];
+  });
 
-  if (numeric.length === 0) return null;
+  if (rows.length === 0) return null;
 
   return (
     <section>
       <h2 className={SECTION_HEADING}>Score breakdown</h2>
-      <div className="bg-surface border border-line rounded-lg px-4 py-2">
-        {numeric.map(([k, v]) => (
-          <DefRow
-            key={k}
-            label={k.replace(/_/g, " ")}
-            value={Number.isInteger(v) ? v.toLocaleString("en-US") : v.toFixed(2)}
-          />
+      <div className="card px-4 py-2">
+        {rows.map((r) => (
+          <DefRow key={r.label} label={r.label} value={r.value} />
         ))}
         {isProvisional(metrics) ? (
-          <div className="pt-2 text-[11.5px] text-warn">
-            Provisional — concentration-blind score.
+          <div className="py-2 text-[11.5px] text-warn">
+            Provisional — validator concentration not yet factored in.
           </div>
         ) : null}
       </div>
@@ -58,7 +70,7 @@ function WarningsCard({ warnings }: { warnings: string[] }) {
   return (
     <section>
       <h2 className={SECTION_HEADING}>Warnings</h2>
-      <div className="bg-surface border border-line rounded-lg px-4 py-3 flex flex-col gap-2">
+      <div className="card px-4 py-3 flex flex-col gap-2">
         {warnings.map((w, i) => (
           <div key={i} className="flex items-start gap-2 text-[13px] text-ink-dim">
             <span className="mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-warn" />
@@ -75,7 +87,7 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
   return (
     <section>
       <h2 className={SECTION_HEADING}>Validators</h2>
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
+      <div className="card overflow-hidden">
         {vals.length === 0 ? (
           <div className="px-4 py-6 text-[13px] text-ink-faint">
             No validator data — try again after the next refresh.
@@ -100,7 +112,7 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
                   >
                     <td className="text-right px-3 tnum text-ink-dim">{i + 1}</td>
                     <td className="px-3 tnum" title={v.hotkey}>
-                      {truncAddr(v.hotkey)}
+                      <span className="mono">{truncAddr(v.hotkey)}</span>
                     </td>
                     <td className="text-right px-3 tnum">{fmtTao(v.stake_tao, true)}</td>
                     <td className="px-3">
@@ -154,7 +166,7 @@ export default function Subnet() {
       <>
         <TopBar meta={meta} />
         <main className="max-w-[1200px] mx-auto px-5 pt-16 flex justify-center">
-          <div className="bg-surface border border-line rounded-lg px-6 py-8 text-center max-w-sm">
+          <div className="card px-6 py-8 text-center max-w-sm">
             <div className="text-ink font-medium">Subnet not found.</div>
             <div className="text-ink-dim text-[13px] mt-1">
               No report for subnet {netuidParam}.
@@ -217,7 +229,7 @@ export default function Subnet() {
           <div className="flex flex-col gap-6 min-w-0">
             <section>
               <h2 className={SECTION_HEADING}>Price (24h)</h2>
-              <div className="bg-surface border border-line rounded-lg px-3 py-3 overflow-hidden">
+              <div className="card px-3 py-3 overflow-hidden fade-in">
                 <PriceChart spark={detail.spark} height={280} />
               </div>
             </section>
@@ -228,7 +240,7 @@ export default function Subnet() {
             {pool ? (
               <section>
                 <h2 className={SECTION_HEADING}>Pool</h2>
-                <div className="bg-surface border border-line rounded-lg px-4 py-2">
+                <div className="card px-4 py-2">
                   <DefRow label="price" value={`${fmtPrice(pool.price_tao)} τ`} />
                   <DefRow label="market cap" value={fmtTao(pool.market_cap_tao, true)} />
                   <DefRow label="τ in pool" value={fmtTao(pool.tao_in, true)} />

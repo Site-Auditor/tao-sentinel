@@ -23,7 +23,7 @@ function AlertsPanelImpl({ alerts }: AlertsPanelProps) {
   return (
     <section>
       <h2 className={SECTION_HEADING}>Recent alerts</h2>
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
+      <div className="card overflow-hidden">
         {shown.length === 0 ? (
           <div className="px-4 py-6 text-[13px] text-ink-faint">
             No alerts in the last cycles — quiet network.

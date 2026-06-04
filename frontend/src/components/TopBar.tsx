@@ -38,11 +38,13 @@ function TopBarImpl({ meta }: TopBarProps) {
             </div>
 
             {meta.mock ? (
-              <span className="text-[11px] uppercase tracking-wide border rounded-full px-2 py-0.5 text-warn border-warn/40">
+              <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide border rounded-full px-2.5 py-0.5 text-warn border-warn/40">
+                <span className="w-1.5 h-1.5 rounded-full bg-warn" />
                 Mock
               </span>
             ) : (
-              <span className="text-[11px] uppercase tracking-wide border rounded-full px-2 py-0.5 text-up border-up/40">
+              <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide border rounded-full px-2.5 py-0.5 text-up border-up/40">
+                <span className="pulse-dot" />
                 Live
               </span>
             )}

@@ -19,7 +19,7 @@ function Skeleton() {
       </div>
       <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
         <div className="skeleton h-[420px]" />
-        <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-6 rise" style={{ "--i": 5 } as React.CSSProperties}>
           <div className="skeleton h-[200px]" />
           <div className="skeleton h-[180px]" />
         </div>

@@ -12,7 +12,7 @@ function PortfolioPanelImpl({ portfolio }: PortfolioPanelProps) {
   return (
     <section>
       <h2 className={SECTION_HEADING}>Portfolio</h2>
-      <div className="bg-surface border border-line rounded-lg overflow-hidden">
+      <div className="card overflow-hidden">
         <div className="px-4 py-3 border-b border-line flex items-center justify-between gap-2">
           <span className="text-[12px] text-ink-dim tnum" title={portfolio.coldkey}>
             {truncAddr(portfolio.coldkey)}

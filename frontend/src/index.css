@@ -1,26 +1,32 @@
 @import "tailwindcss";
 @import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
 
-/* ----------------------------------------------------------------------- */
-/* Design tokens — taostats-inspired: near-black surfaces, hairline borders, */
-/* teal signal accent, green/red reserved exclusively for deltas/severity.   */
-/* ----------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------ */
+/* tao-sentinel design system                                                 */
+/* Voice: precision instrument. Near-black with warm depth, hairline borders, */
+/* one signal color (teal) used like a laser pointer, mono for machine data,  */
+/* light that responds to the user (hover lift, focus ring, pulse).           */
+/* ------------------------------------------------------------------------ */
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
 
-  --color-bg: #0a0a0e;
-  --color-surface: #121217;
-  --color-surface-2: #17171e;
-  --color-surface-3: #1e1e27;
-  --color-line: #232330;
-  --color-line-2: #2e2e3d;
+  --color-bg: #08080c;
+  --color-surface: #101016;
+  --color-surface-2: #16161e;
+  --color-surface-3: #1d1d28;
+  --color-line: #20202c;
+  --color-line-2: #2c2c3a;
 
-  --color-ink: #ecedf2;
-  --color-ink-dim: #9fa3b1;
-  --color-ink-faint: #62677a;
+  --color-ink: #eceef4;
+  --color-ink-dim: #9da2b3;
+  --color-ink-faint: #5d6275;
 
-  --color-accent: #2dd4bf;
-  --color-accent-dim: #134e48;
+  --color-accent: #2ee6c8;
+  --color-accent-deep: #0d9488;
+  --color-accent-dim: #11433d;
 
   --color-up: #34d399;
   --color-down: #fb7185;
@@ -31,6 +37,10 @@
   --color-grade-c: #fbbf24;
   --color-grade-d: #fb923c;
   --color-grade-f: #fb7185;
+
+  --animate-rise: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-pulse-dot: pulse-dot 2.4s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.8s linear infinite;
 }
 
 html {
@@ -42,9 +52,15 @@ html {
   text-rendering: optimizeLegibility;
 }
 
+/* Ambient lighting: a faint teal aurora top-left and a vignette — gives the
+   page depth without the user ever consciously noticing. */
 body {
   margin: 0;
   min-height: 100vh;
+  background:
+    radial-gradient(1100px 500px at 18% -10%, rgba(46, 230, 200, 0.05), transparent 60%),
+    radial-gradient(900px 420px at 85% -10%, rgba(99, 102, 241, 0.04), transparent 55%),
+    var(--color-bg);
 }
 
 /* Numbers align in columns everywhere. */
@@ -53,27 +69,132 @@ body {
   font-feature-settings: "tnum";
 }
 
-/* Hairline scrollbars that match the theme. */
+/* Machine data (addresses, ids, raw values). */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  letter-spacing: -0.01em;
+}
+
+/* Dimmed unit/decimals trick: $216 bright, .01 quieter. */
+.unit-dim {
+  color: var(--color-ink-faint);
+  font-weight: 400;
+}
+
+/* ---- Cards: layered surface with an inner hairline and hover lift ------- */
+.card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 38%),
+    var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  transition:
+    border-color 0.2s ease,
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.25s ease;
+}
+.card-hover:hover {
+  border-color: var(--color-line-2);
+  transform: translateY(-2px);
+  box-shadow:
+    0 8px 28px -12px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(46, 230, 200, 0.05);
+}
+
+/* ---- Focus: a deliberate ring, not the browser default ------------------ */
+:where(input, button, a, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--color-bg),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 55%, transparent);
+  border-radius: 6px;
+}
+
+/* ---- Motion primitives --------------------------------------------------- */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-up) 45%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+@keyframes spark-draw {
+  from { stroke-dashoffset: var(--spark-len, 300); }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Staggered entrance: parents set --i per child. */
+.rise {
+  animation: var(--animate-rise);
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+.fade-in { animation: fade-in 0.6s ease both; }
+
+/* Sparkline draw-in. */
+.spark-path {
+  stroke-dasharray: var(--spark-len, 300);
+  animation: spark-draw 1.1s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
+}
+
+/* Live pulse dot. */
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-up);
+  animation: var(--animate-pulse-dot);
+}
+
+/* Skeletons: directional shimmer instead of opacity pulse. */
+.skeleton {
+  border-radius: 6px;
+  background:
+    linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.045) 50%, transparent 70%),
+    var(--color-surface-3);
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+/* Table rows: light the row from the left rail on hover. */
+.row-hover {
+  position: relative;
+  transition: background-color 0.15s ease;
+}
+.row-hover::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--color-accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.row-hover:hover::before { opacity: 0.85; }
+
+/* Hairline scrollbars. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-line-2) transparent;
 }
-*::-webkit-scrollbar {
-  height: 8px;
-  width: 8px;
-}
-*::-webkit-scrollbar-thumb {
-  background: var(--color-line-2);
-  border-radius: 4px;
-}
+*::-webkit-scrollbar { height: 8px; width: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--color-line-2); border-radius: 4px; }
 
-/* Subtle skeleton shimmer for loading states. */
-@keyframes pulse-soft {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 0.9; }
-}
-.skeleton {
-  background: var(--color-surface-3);
-  border-radius: 4px;
-  animation: pulse-soft 1.6s ease-in-out infinite;
+/* Respect users who opt out of motion. */
+@media (prefers-reduced-motion: reduce) {
+  .rise, .fade-in, .spark-path, .pulse-dot, .skeleton {
+    animation: none !important;
+  }
+  .card, .card-hover, .row-hover { transition: none !important; }
 }
