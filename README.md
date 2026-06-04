@@ -27,6 +27,11 @@ mainnet data on the Taostats free tier.
 
 ![tao-sentinel dashboard with live mainnet subnet health grades](docs/dashboard.png)
 
+The per-subnet detail page shows the price chart, pool reserves, score breakdown, and the
+top validators by stake, with concentration called out as warnings:
+
+![tao-sentinel subnet detail page with validators and concentration warnings](docs/subnet.png)
+
 > Open source. Issues and PRs welcome.
 
 ---
