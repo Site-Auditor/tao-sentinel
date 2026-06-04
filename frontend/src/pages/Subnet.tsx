@@ -189,7 +189,7 @@ export default function Subnet() {
         <TopBar meta={meta} />
         <main className="max-w-[1200px] mx-auto px-5 pt-6 pb-16 flex flex-col gap-6">
           <div className="skeleton h-6 w-48" />
-          <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+          <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
             <div className="skeleton h-[420px]" />
             <div className="skeleton h-[300px]" />
           </div>
@@ -225,7 +225,7 @@ export default function Subnet() {
           </span>
         </div>
 
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
+        <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px] gap-6">
           <div className="flex flex-col gap-6 min-w-0">
             <section>
               <h2 className={SECTION_HEADING}>Price (24h)</h2>

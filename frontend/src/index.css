@@ -114,7 +114,11 @@ body {
 /* ---- Motion primitives --------------------------------------------------- */
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  /* End at `none`, not translateY(0): with fill-mode both the final
+     transform STAYS applied, and any non-none transform on an ancestor
+     becomes the containing block for position:sticky descendants —
+     which would silently break the table's viewport-sticky header. */
+  to { opacity: 1; transform: none; }
 }
 @keyframes pulse-dot {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-up) 45%, transparent); }
