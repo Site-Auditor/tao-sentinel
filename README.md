@@ -33,6 +33,9 @@ top validators by stake, with concentration called out as warnings:
 ![tao-sentinel subnet detail page with validators and concentration warnings](docs/subnet.png)
 
 > Open source. Issues and PRs welcome.
+>
+> Write-up from the build:
+> [The phantom table cell, and other bugs that lied to me](https://www.insightfulbytes.com/blog/phantom-table-cell-bugs-that-lied)
 
 ---
 
