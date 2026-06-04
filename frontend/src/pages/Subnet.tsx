@@ -101,7 +101,9 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
                   <th className="text-left py-2 px-3">hotkey</th>
                   <th className="text-right py-2 px-3">stake τ</th>
                   <th className="text-right py-2 px-3">share</th>
-                  <th className="text-right py-2 px-3">vtrust</th>
+                  <th className="hidden sm:table-cell text-right py-2 px-3">
+                    vtrust
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -111,10 +113,12 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
                     className="h-[38px] border-t border-line hover:bg-surface-2 transition-colors"
                   >
                     <td className="text-right px-3 tnum text-ink-dim">{i + 1}</td>
-                    <td className="px-3 tnum" title={v.hotkey}>
+                    <td className="px-3 tnum whitespace-nowrap" title={v.hotkey}>
                       <span className="mono">{truncAddr(v.hotkey)}</span>
                     </td>
-                    <td className="text-right px-3 tnum">{fmtTao(v.stake_tao, true)}</td>
+                    <td className="text-right px-3 tnum whitespace-nowrap">
+                      {fmtTao(v.stake_tao, true)}
+                    </td>
                     <td className="px-3">
                       <div className="flex items-center justify-end gap-2">
                         <span className="h-1 w-16 rounded bg-surface-3 overflow-hidden">
@@ -130,7 +134,7 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
                         </span>
                       </div>
                     </td>
-                    <td className="text-right px-3 tnum">
+                    <td className="hidden sm:table-cell text-right px-3 tnum">
                       {v.vtrust == null ? "—" : v.vtrust.toFixed(2)}
                     </td>
                   </tr>
