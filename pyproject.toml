@@ -48,4 +48,4 @@ tao-sentinel = "tao_sentinel.cli:app"
 include = ["tao_sentinel*"]
 
 [tool.setuptools.package-data]
-tao_sentinel = ["web/templates/*.html", "web/static/**/*"]
+tao_sentinel = ["web/static/**/*"]

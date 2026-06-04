@@ -32,7 +32,6 @@ from typing import Any, AsyncIterator, Callable, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from ..api import TaostatsError
 from ..config import Config, load_config
@@ -70,12 +69,29 @@ _DETAIL_TOP_VALIDATORS = 10
 #: Auto-refresh interval baked into the dashboard ``<meta>`` tag, in seconds.
 DASHBOARD_REFRESH_SECONDS = 300
 
-#: Directory holding the Jinja2 templates shipped with the package.
-_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
-
 #: Directory holding the built React SPA (emitted by `npm run build` in
 #: frontend/; absent in source checkouts without node -> Jinja fallback).
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+#: Served at / and /subnet/{netuid} when the React build is absent (source
+#: checkout without node). One real frontend exists; this page just points
+#: at the JSON API and the build instructions.
+_PLACEHOLDER_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tao-sentinel</title>
+<style>body{background:#08080c;color:#eceef4;font:14px/1.6 system-ui;
+display:grid;place-items:center;min-height:100vh;margin:0}
+main{max-width:34rem;padding:2rem}code{background:#16161e;padding:2px 6px;
+border-radius:4px}a{color:#2ee6c8}</style></head><body><main>
+<h1>tao-sentinel</h1>
+<p>The dashboard frontend is not built in this installation. The JSON API is
+fully available:</p>
+<p><a href="/api/status">/api/status</a> and <code>/api/subnet/{netuid}</code></p>
+<p>To build the UI from a source checkout:</p>
+<p><code>cd frontend &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+<p>Installing the published wheel or Docker image includes the UI already.</p>
+</main></body></html>"""
 
 #: Number of recent alerts surfaced on the dashboard.
 _MAX_RECENT_ALERTS = 25
@@ -550,7 +566,6 @@ def create_app(
     spark_cache = _TTLCache(SPARK_HISTORY_TTL_SECONDS)
     # Per-netuid authoritative detail behind a 1h TTL, LRU-capped at 16.
     detail_cache = _LRUTTLCache(DETAIL_TTL_SECONDS, DETAIL_CACHE_MAX)
-    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
     def _warm_cache() -> None:
         """Populate the status cache once so the first visitor never blocks.
@@ -855,8 +870,9 @@ def create_app(
     # `npm run build` in frontend/ and shipped in the wheel/Docker image), it
     # IS the dashboard: / and /subnet/{netuid} serve the SPA shell and the
     # client renders from the JSON API. Without the build (source checkout
-    # with no node, tests), the legacy server-rendered Jinja templates serve
-    # the same data so the package still works standalone.
+    # with no node), a minimal placeholder page points at the JSON API and
+    # the build instructions; maintaining a second full server-rendered UI
+    # proved to be a drift hazard, so there is exactly one real frontend.
     _spa_index = _STATIC_DIR / "index.html"
     _serve_spa = _spa_index.is_file()
     if _serve_spa:
@@ -878,20 +894,9 @@ def create_app(
     else:
 
         @app.get("/", response_class=HTMLResponse)
-        def dashboard(request: Request) -> HTMLResponse:
-            """Render the legacy server-side HTML dashboard."""
-            status = _build_status()
-            return templates.TemplateResponse(
-                request,
-                "dashboard.html",
-                {
-                    "subnets": status["subnets"],
-                    "portfolio": status["portfolio"],
-                    "alerts": status["alerts"],
-                    "meta": status["meta"],
-                    "refresh_seconds": DASHBOARD_REFRESH_SECONDS,
-                },
-            )
+        def placeholder(request: Request) -> HTMLResponse:
+            """Serve a minimal page when the frontend build is absent."""
+            return HTMLResponse(_PLACEHOLDER_HTML)
 
     @app.get("/healthz")
     def healthz() -> JSONResponse:
@@ -929,24 +934,9 @@ def create_app(
     else:
 
         @app.get("/subnet/{netuid}", response_class=HTMLResponse)
-        def subnet_detail_html(request: Request, netuid: int) -> HTMLResponse:
-            """Render the legacy single-subnet detail page (404 if unknown).
-
-            The detail JSON payload is flattened into the ``subnet`` context
-            object the ``subnet.html`` template expects: score/grade/
-            provisional/warnings hoisted out of the nested ``report``,
-            alongside ``pool``, ``spark``, ``spark_change_pct`` and
-            ``validators``. An unknown netuid renders a small standalone 404
-            page (the template has no not-found branch).
-            """
-            detail = _subnet_detail(netuid)
-            if detail is None:
-                return HTMLResponse(_not_found_html(netuid), status_code=404)
-            return templates.TemplateResponse(
-                request,
-                "subnet.html",
-                {"subnet": _detail_template_context(detail), "meta": _detail_meta()},
-            )
+        def subnet_placeholder(request: Request, netuid: int) -> HTMLResponse:
+            """Without the frontend build, point at the JSON API instead."""
+            return HTMLResponse(_PLACEHOLDER_HTML)
 
     @app.get("/api/subnet/{netuid}")
     def subnet_detail_json(netuid: int) -> JSONResponse:
@@ -958,64 +948,6 @@ def create_app(
             )
         return JSONResponse(detail)
 
-    def _detail_meta() -> dict[str, Any]:
-        """Return the small meta block shared by the detail page/JSON."""
-        return {
-            "mock": mock or not config.api_key,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
 
     return app
 
-
-def _detail_template_context(detail: dict[str, Any]) -> dict[str, Any]:
-    """Flatten a detail payload into the ``subnet.html`` template's view object.
-
-    The JSON API shape nests scoring under ``report``; the template wants
-    ``score``/``grade``/``provisional``/``warnings`` at the top level next to
-    ``pool``/``spark``/``spark_change_pct``/``validators``. Missing pieces (e.g.
-    a pool-only netuid with no scan report) default sensibly so the template
-    never dereferences ``None``.
-
-    Args:
-        detail: A non-``None`` detail payload from ``_subnet_detail``.
-
-    Returns:
-        A flat context dict for the template.
-    """
-    report = detail.get("report") or {}
-    metrics = report.get("metrics") or {}
-    return {
-        "netuid": detail["netuid"],
-        "name": detail.get("name"),
-        "score": report.get("score", 0.0),
-        "grade": report.get("grade", "F"),
-        "provisional": bool(metrics.get("provisional")),
-        "warnings": report.get("warnings") or [],
-        "pool": detail.get("pool"),
-        "spark": detail.get("spark"),
-        "spark_change_pct": detail.get("spark_change_pct"),
-        "validators": detail.get("validators") or [],
-    }
-
-
-def _not_found_html(netuid: int) -> str:
-    """Return a minimal dark-theme 404 page for an unknown netuid.
-
-    Rendered standalone (not via ``subnet.html``) because that template assumes
-    a present ``subnet`` object and has no not-found branch.
-    """
-    return (
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"/>"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
-        f"<title>tao-sentinel &middot; subnet {netuid} not found</title>"
-        "<style>html,body{margin:0;background:#0d1117;color:#e6edf3;"
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
-        "Helvetica,Arial,sans-serif;}.wrap{max-width:640px;margin:0 auto;"
-        "padding:64px 20px;text-align:center;}a{color:#58a6ff;"
-        "text-decoration:none;}h1{font-size:22px;}</style></head><body>"
-        "<div class=\"wrap\"><h1>Subnet not found</h1>"
-        f"<p>No subnet with netuid <code>{netuid}</code> was found in the "
-        "current pool or subnet list.</p>"
-        "<p><a href=\"/\">&larr; back to dashboard</a></p></div></body></html>"
-    )

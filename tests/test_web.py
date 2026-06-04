@@ -426,45 +426,36 @@ def test_subnet_detail_lru_eviction(monkeypatch):
 
 
 def test_subnet_detail_html_unknown_netuid(monkeypatch):
-    """Unknown netuid: SPA serves the shell (client renders not-found, JSON
-    stays the authoritative 404); the legacy Jinja surface 404s server-side."""
-    import pytest
-
-    from tao_sentinel.web.app import _STATIC_DIR, _TEMPLATES_DIR
+    """Unknown netuid: SPA serves the shell (the client renders not-found and
+    the JSON API stays the authoritative 404); without the build, the
+    placeholder page serves instead. There is no server-rendered detail UI."""
+    from tao_sentinel.web.app import _STATIC_DIR
 
     spa = (_STATIC_DIR / "index.html").is_file()
-    if not spa and not (_TEMPLATES_DIR / "subnet.html").exists():
-        pytest.skip("neither SPA build nor subnet.html present")
 
     spy = _SpyClient()
     _install(monkeypatch, spy)
     app = create_app(config_path=None, mock=True)
     with TestClient(app) as client:
         resp = client.get("/subnet/999")
+        assert resp.status_code == 200
         if spa:
-            assert resp.status_code == 200  # SPA routing semantics
-            assert 'id="root"' in resp.text
+            assert 'id="root"' in resp.text  # SPA shell
         else:
-            assert resp.status_code == 404
+            assert "frontend is not built" in resp.text  # placeholder
         # The JSON API is the authoritative 404 either way.
         assert client.get("/api/subnet/999").status_code == 404
 
 
 def test_subnet_detail_html_ok(monkeypatch):
-    """A known netuid HTML detail returns 200 (skips without the template)."""
-    import pytest
-
-    from tao_sentinel.web.app import _TEMPLATES_DIR
-
-    if not (_TEMPLATES_DIR / "subnet.html").exists():
-        pytest.skip("subnet.html not present in standalone run (frontend cluster)")
-
+    """A known netuid serves an HTML page in both modes (SPA or placeholder)."""
     spy = _SpyClient()
     _install(monkeypatch, spy)
     app = create_app(config_path=None, mock=True)
     with TestClient(app) as client:
         resp = client.get("/subnet/1")
     assert resp.status_code == 200
+    assert "tao-sentinel" in resp.text
 
 
 def test_healthz_is_cheap_and_always_up():
