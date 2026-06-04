@@ -100,7 +100,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
               to={`/subnet/${r.netuid}`}
               onClick={(e) => e.stopPropagation()}
               title={r.name ?? undefined}
-              className="block truncate max-w-[110px] sm:max-w-[170px] xl:max-w-[230px] font-medium text-ink group-hover:text-accent transition-colors"
+              className="block truncate max-w-[min(120px,26vw)] sm:max-w-[180px] xl:max-w-[230px] font-medium text-ink group-hover:text-accent transition-colors"
             >
               {r.name ?? "—"}
             </Link>
@@ -306,7 +306,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                           "group/th sticky top-[56px] z-10 bg-surface-2/95 backdrop-blur",
                           "first:rounded-tl-[9px] last:rounded-tr-[9px]",
                           "text-[11px] uppercase tracking-wide text-ink-faint font-medium",
-                          "py-2.5 px-2 sm:px-2.5 whitespace-nowrap border-b border-line",
+                          "py-2.5 px-2 whitespace-nowrap border-b border-line",
                           right ? "text-right" : "text-left",
                           sortable ? "cursor-pointer select-none hover:text-ink-dim transition-colors" : "",
                         ].join(" ")}
@@ -345,7 +345,7 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
                       <td
                         key={cell.id}
                         className={[
-                          "px-2 sm:px-2.5 whitespace-nowrap",
+                          "px-2 whitespace-nowrap",
                           right ? "text-right tnum" : "text-left",
                         ].join(" ")}
                       >

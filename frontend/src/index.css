@@ -169,23 +169,20 @@ body {
   animation: var(--animate-shimmer);
 }
 
-/* Table rows: light the row from the left rail on hover. */
+/* Table rows: light the row from the left rail on hover.
+   IMPORTANT: implemented as an inset shadow on the first cell, NOT a
+   tr::before — a pseudo-element on a table row generates an ANONYMOUS
+   TABLE CELL (Chrome), silently adding a phantom column that misaligns
+   every header from its body cells and widens the table. */
 .row-hover {
-  position: relative;
   transition: background-color 0.15s ease;
 }
-.row-hover::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--color-accent);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+.row-hover td:first-child {
+  transition: box-shadow 0.15s ease;
 }
-.row-hover:hover::before { opacity: 0.85; }
+.row-hover:hover td:first-child {
+  box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--color-accent) 85%, transparent);
+}
 
 /* Hairline scrollbars. */
 * {
