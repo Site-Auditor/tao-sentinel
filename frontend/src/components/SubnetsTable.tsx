@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import React, { memo, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   createColumnHelper,
@@ -72,6 +72,9 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
   const isLg = useMediaQuery("(min-width: 1024px)");
   const isXl = useMediaQuery("(min-width: 1280px)");
   const midColumns = (isMd && !isLg) || isXl; // full-width md, or wide xl
+  // Progressive disclosure: when columns are hidden, tapping a row expands
+  // an inline strip with exactly those fields (one row open at a time).
+  const [expandedNetuid, setExpandedNetuid] = useState<number | null>(null);
   const columnVisibility: VisibilityState = {
     // Below sm the GRADE badge carries the signal; the numeric score would
     // push 5-column min-content past a 390px viewport.
@@ -83,13 +86,47 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
     warnings: isXl,
   };
 
+  // The same visibility map drives the expansion strip, so it always shows
+  // exactly what the current tier hides — no separate mobile markup to drift.
+  const HIDDEN_FIELDS: Array<{
+    id: string;
+    label: string;
+    value: (r: SubnetRow) => React.ReactNode;
+  }> = [
+    { id: "score", label: "Score", value: (r) => r.score.toFixed(1) },
+    { id: "mcap", label: "Market cap", value: (r) => fmtTao(r.metrics.market_cap_tao, true) },
+    { id: "emission", label: "Emission", value: (r) => fmtPct(r.metrics.emission_pct) },
+    {
+      id: "validators",
+      label: "Validators",
+      value: (r) => fmtCount(r.metrics.n_active_validators ?? r.metrics.n_validators),
+    },
+    { id: "miners", label: "Miners", value: (r) => fmtCount(r.metrics.n_miners) },
+    {
+      id: "warnings",
+      label: "Warnings",
+      value: (r) =>
+        r.warnings.length === 0 ? (
+          <span className="text-ink-faint">none</span>
+        ) : (
+          <span className="text-warn" title={r.warnings.join("\n")}>
+            {r.warnings.length}
+          </span>
+        ),
+    },
+  ];
+  const hiddenFields = HIDDEN_FIELDS.filter(
+    (f) => columnVisibility[f.id] === false,
+  );
+  const expandable = hiddenFields.length > 0;
+
   const columns = useMemo(
     () => [
       col.accessor("netuid", {
         header: "netuid",
         cell: (c) => <span className="text-ink-dim tnum">{c.getValue()}</span>,
         size: 60,
-      }),
+      }),  // chevron affordance is injected at render time (needs row state)
       col.accessor((r) => r.name ?? "", {
         id: "name",
         header: "name",
@@ -333,31 +370,91 @@ function SubnetsTableImpl({ rows }: SubnetsTableProps) {
               ))}
             </thead>
             <tbody>
-              {table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  onClick={() => navigate(`/subnet/${row.original.netuid}`)}
-                  className="group row-hover h-[42px] border-b border-line last:border-b-0 hover:bg-surface-2 cursor-pointer"
-                >
-                  {row.getVisibleCells().map((cell) => {
-                    const right = rightAligned.has(cell.column.id);
-                    return (
-                      <td
-                        key={cell.id}
-                        className={[
-                          "px-2 whitespace-nowrap",
-                          right ? "text-right tnum" : "text-left",
-                        ].join(" ")}
-                      >
-                        {flexRender(
-                          cell.column.columnDef.cell,
-                          cell.getContext(),
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+              {table.getRowModel().rows.map((row) => {
+                const netuid = row.original.netuid;
+                const isOpen = expandable && expandedNetuid === netuid;
+                const visibleCells = row.getVisibleCells();
+                return (
+                  <React.Fragment key={row.id}>
+                    <tr
+                      onClick={() =>
+                        expandable
+                          ? setExpandedNetuid(isOpen ? null : netuid)
+                          : navigate(`/subnet/${netuid}`)
+                      }
+                      aria-expanded={expandable ? isOpen : undefined}
+                      className={[
+                        "group row-hover h-[42px] border-b border-line",
+                        "last:border-b-0 hover:bg-surface-2 cursor-pointer",
+                        isOpen ? "bg-surface-2" : "",
+                      ].join(" ")}
+                    >
+                      {visibleCells.map((cell, ci) => {
+                        const right = rightAligned.has(cell.column.id);
+                        return (
+                          <td
+                            key={cell.id}
+                            className={[
+                              "px-2 whitespace-nowrap",
+                              right ? "text-right tnum" : "text-left",
+                            ].join(" ")}
+                          >
+                            {ci === 0 && expandable ? (
+                              <span className="inline-flex items-center gap-1.5 justify-end w-full">
+                                <span
+                                  aria-hidden
+                                  className={[
+                                    "text-[8px] text-ink-faint transition-transform",
+                                    isOpen ? "rotate-90 text-accent" : "",
+                                  ].join(" ")}
+                                >
+                                  ▶
+                                </span>
+                                {flexRender(
+                                  cell.column.columnDef.cell,
+                                  cell.getContext(),
+                                )}
+                              </span>
+                            ) : (
+                              flexRender(
+                                cell.column.columnDef.cell,
+                                cell.getContext(),
+                              )
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                    {isOpen ? (
+                      <tr className="border-b border-line bg-surface-2/40">
+                        <td colSpan={visibleCells.length} className="px-3 py-3">
+                          <div className="fade-in grid grid-cols-2 min-[480px]:grid-cols-3 gap-x-6 gap-y-2.5">
+                            {hiddenFields.map((f) => (
+                              <div key={f.id}>
+                                <div className="text-[10px] uppercase tracking-[0.12em] text-ink-faint font-medium">
+                                  {f.label}
+                                </div>
+                                <div className="tnum text-[13px] mt-0.5">
+                                  {f.value(row.original)}
+                                </div>
+                              </div>
+                            ))}
+                            <div className="col-span-full pt-1">
+                              <Link
+                                to={`/subnet/${netuid}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-accent text-[12px] hover:underline"
+                              >
+                                Full details →
+                              </Link>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </React.Fragment>
+                );
+              })}
               {table.getRowModel().rows.length === 0 ? (
                 <tr>
                   <td
