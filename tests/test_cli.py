@@ -579,12 +579,12 @@ def test_watch_once_no_notify_is_console_only(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_dashboard_surfaces_provisional_flag():
-    """The provisional disclosure reaches whichever HTML surface is active.
+def test_dashboard_grades_are_never_provisional():
+    """Grade consistency: the provisional-score concept is retired.
 
-    With the React build present, / serves the SPA shell and the client
-    renders the caveat from meta.provisional (assert the flag + shell here);
-    without it, the legacy Jinja page must carry the caveat text itself.
+    The score formula is identical in scan-all and single scans, so
+    meta.provisional is always False and no caveat banner renders --
+    the same subnet can no longer grade A in the list and D on click.
     """
     from tao_sentinel.web.app import _STATIC_DIR, create_app
 
@@ -592,10 +592,8 @@ def test_dashboard_surfaces_provisional_flag():
         html = client.get("/").text
         if (_STATIC_DIR / "index.html").is_file():
             assert 'id="root"' in html  # SPA shell
-        else:
-            assert "Provisional scores" in html  # legacy server-rendered
         status = client.get("/api/status").json()
-        assert status["meta"]["provisional"] is True
+        assert status["meta"]["provisional"] is False
 
 
 # --------------------------------------------------------------------------- #

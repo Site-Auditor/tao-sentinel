@@ -42,7 +42,6 @@ logger = logging.getLogger(__name__)
 
 # Score weights (sum to 100). Each component returns a 0..1 fraction that is
 # multiplied by its weight.
-_WEIGHT_CONCENTRATION = 35.0
 _WEIGHT_EMISSION = 20.0
 _WEIGHT_NEURONS = 25.0
 _WEIGHT_MARKET = 20.0
@@ -215,17 +214,28 @@ class SubnetScanner:
         emission_score = self._score_emission(
             subnet, emission_median, metrics, warnings
         )
-        neuron_score = self._score_neurons(
-            subnet, metrics, warnings, n_active_validators
-        )
+        # Scoring inputs must be IDENTICAL in both scan modes (grade
+        # consistency invariant), so the fetched validator count never
+        # enters the score -- it is recorded below as display metadata and
+        # can add warnings, but the formula sees only the subnet row.
+        neuron_score = self._score_neurons(subnet, metrics, warnings, None)
         market_score = self._score_market(subnet, metrics, warnings)
 
-        # Concentration needs the real per-validator stake distribution. In
-        # the all-subnets scan that data is not fetched, so rather than fake
-        # it from a slot cap (which would make the headline score swing by
-        # tens of points versus a single-netuid scan), the concentration
-        # component is EXCLUDED entirely and the remaining component weights
-        # are renormalized to keep the score on the 0-100 scale.
+        if n_active_validators is not None:
+            metrics["n_active_validators"] = n_active_validators
+            metrics["n_validators_is_cap"] = False
+            if n_active_validators < 5:
+                warnings.append(
+                    f"Only {n_active_validators} active validators registered."
+                )
+
+        # ONE score formula everywhere. Concentration deliberately does NOT
+        # enter the score: it needs per-validator stake (only fetched on
+        # single-netuid scans), and any view-dependent component makes the
+        # SAME subnet grade A on the dashboard and D on its detail page --
+        # which users rightly read as a bug. Concentration is surfaced as an
+        # explicit RISK assessment (metrics + warnings) where the data
+        # exists, instead of silently bending the grade.
         weighted = (
             emission_score * _WEIGHT_EMISSION
             + neuron_score * _WEIGHT_NEURONS
@@ -235,28 +245,11 @@ class SubnetScanner:
 
         if validators is None:
             metrics["concentration"] = {"source": "unavailable"}
-            metrics["provisional"] = True
-            metrics["note"] = (
-                "PROVISIONAL all-subnets score. Validator detail was not "
-                "fetched (rate-frugal), so the concentration component (the "
-                "single largest weight) is EXCLUDED and the remaining "
-                "emission/neuron/market weights are renormalized to 0-100. "
-                "This is NOT comparable to a single-netuid scan: because a "
-                "concentrated validator set is invisible here, this score can "
-                "be materially HIGHER -- by tens of points, enough to flip the "
-                "letter grade -- than the concentration-inclusive score the "
-                "same subnet gets from scan(netuid). Treat this score as an "
-                "upper-bound triage signal and rescan a specific netuid for the "
-                "authoritative, concentration-inclusive grade."
-            )
         else:
-            conc_score = self._score_concentration(
-                validators, subnet, metrics, warnings
-            )
-            weighted += conc_score * _WEIGHT_CONCENTRATION
-            total_weight += _WEIGHT_CONCENTRATION
+            # Risk-only: fills metrics["concentration"] (top1/top5 shares)
+            # and appends concentration warnings; never touches the score.
+            self._score_concentration(validators, subnet, metrics, warnings)
 
-        # Renormalize to a 0-100 scale over whatever components contributed.
         score = (weighted / total_weight) * 100.0 if total_weight > 0 else 0.0
         score = round(_clamp(score, 0.0, 100.0), 2)
 

@@ -187,7 +187,7 @@ Routes:
   block with `generated_at`, `tao_price_usd`, and `tao_price_spark`). Sparkline series are
   included only for watchlist netuids.
 - `GET /subnet/{netuid}` — a per-subnet **detail page** (HTML): an authoritative single-subnet
-  scan (real validator-stake concentration, not the provisional list-only score), pool detail
+  scan with validator-stake concentration surfaced as explicit risk warnings, pool detail
   (price, market cap, TAO/alpha reserves), a 24h sparkline with its percent change, and the
   top-10 validators by stake with each validator's share percentage. Unknown netuids return a
   404 page.

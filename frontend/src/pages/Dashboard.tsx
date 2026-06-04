@@ -100,8 +100,8 @@ export default function Dashboard() {
         </div>
 
         <footer className="text-ink-faint text-[12px] border-t border-line pt-4">
-          data: taostats · refreshed every 5m · provisional scores exclude
-          validator concentration ·{" "}
+          data: taostats · refreshed every 5m · concentration shown as risk
+          warnings, not scored ·{" "}
           <a
             href={REPO_URL}
             className="text-ink-faint hover:text-accent transition-colors"

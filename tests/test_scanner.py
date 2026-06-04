@@ -83,13 +83,21 @@ def test_all_scores_within_range(mock_client):
 # --------------------------------------------------------------------------- #
 
 
-def test_concentrated_subnet_scores_worse_than_distributed(mock_client):
-    """netuid 1 (one dominant validator) scores below netuid 4 (distributed)."""
+def test_concentration_is_risk_not_score(mock_client):
+    """Concentration surfaces as WARNINGS, never as a score component.
+
+    Grade consistency invariant: the same subnet must grade identically on
+    the dashboard (scan-all, no validator data) and its detail page (single
+    scan, validator data) — a grade that changes when clicked reads as a
+    bug. The concentrated fixture therefore warns loudly but its score is
+    the same one scan-all computes.
+    """
     scanner = SubnetScanner(mock_client)
     concentrated = scanner.scan(1)[0]
-    distributed = scanner.scan(4)[0]
-
-    assert concentrated.score < distributed.score
+    assert any("Top validator" in w for w in concentrated.warnings)
+    all_row = next(r for r in scanner.scan() if r.netuid == 1)
+    assert concentrated.score == all_row.score
+    assert concentrated.grade == all_row.grade
 
 
 def test_concentrated_subnet_raises_concentration_warning(mock_client):
@@ -147,8 +155,8 @@ def test_scan_all_does_not_fetch_validators(mock_client):
     assert reports
     for report in reports:
         assert report.metrics["validator_data"] is False
-        assert "note" in report.metrics  # records the rate-frugal omission
-        # Concentration is excluded (not faked from a slot cap), not scored.
+        # Concentration risk simply has no data here; the score formula is
+        # identical either way so nothing needs disclosing.
         assert report.metrics["concentration"] == {"source": "unavailable"}
 
 
@@ -180,13 +188,12 @@ class _CountingPoolClient:
         return self._inner.get_validators(netuid)
 
 
-def test_scan_all_excludes_concentration_and_renormalizes():
-    """Scan-all renormalizes over emission/neuron/market only (no concentration).
+def test_score_formula_is_emission_neurons_market_only():
+    """The score is emission/neurons/market — concentration never enters.
 
-    A single subnet whose three contributing components each score full marks
-    must yield exactly 100, proving the remaining weights are renormalized to
-    sum to 100 rather than leaving the discarded 35-point concentration slot
-    as dead weight (which would cap the score at 65).
+    A subnet whose three components each score full marks must yield exactly
+    100 (no dead-weight concentration slot), in BOTH scan modes by
+    construction since the formula is shared.
     """
 
     class _PerfectSubnetClient:
@@ -208,7 +215,7 @@ def test_scan_all_excludes_concentration_and_renormalizes():
 
     assert report.metrics["concentration"] == {"source": "unavailable"}
     assert report.metrics["validator_data"] is False
-    assert "EXCLUDED" in report.metrics["note"]
+    assert "note" not in report.metrics  # provisional machinery retired
     # Renormalized: 65 weighted points / 65 total * 100 == 100, not 65.
     assert report.score == pytest.approx(100.0)
 
@@ -362,57 +369,25 @@ def test_scan_all_skips_validator_subscore_and_does_not_saturate():
     assert report.score < 70.0
 
 
-def test_scan_all_score_is_flagged_provisional_with_swing_disclosure():
-    """All-subnets reports are flagged provisional and disclose the grade swing.
+def test_grades_identical_between_scan_all_and_single(mock_client):
+    """THE consistency invariant: every subnet grades the same in the
+    dashboard list (scan-all) and on its detail page (single scan).
 
-    Regression for finding 9's note-disclosure complaint: the all-subnets note
-    must warn that the score is PROVISIONAL and can be materially higher (enough
-    to flip the grade) than the concentration-inclusive single-netuid score.
-    """
-
-    class _OneSubnetClient:
-        def get_subnets(self):
-            return [
-                SubnetInfo(
-                    netuid=1, name="apex", emission_pct=10.0, price_tao=0.02,
-                    market_cap_tao=100000.0, n_validators=64, n_miners=200,
-                ),
-            ]
-
-        def get_pools(self):
-            return []
-
-    report = SubnetScanner(_OneSubnetClient()).scan()[0]
-    assert report.metrics["provisional"] is True
-    note = report.metrics["note"]
-    # The note must surface the unreliability, not just "missing precision".
-    assert "PROVISIONAL" in note
-    assert "NOT comparable" in note
-    assert "flip the letter grade" in note
-
-
-def test_same_subnet_scan_all_higher_and_grade_flips_is_disclosed(mock_client):
-    """The all-subnets vs single divergence still exists BUT is now disclosed.
-
-    The contract pins this mechanism (scan-all excludes concentration; single
-    includes it), so the two modes legitimately disagree for a concentrated
-    subnet. What finding 9 required is that the gap not be silent: the
-    all-subnets report must carry provisional=True and a note that warns the
-    score can flip the grade versus a single-netuid scan.
+    Replaces the old 'provisional score' design, where concentration only
+    entered single-scan scores and the same subnet could show A in the list
+    and D on click — which users correctly reported as a bug.
     """
     scanner = SubnetScanner(mock_client)
-    all_report = next(r for r in scanner.scan() if r.netuid == 1)
-    single_report = scanner.scan(1)[0]
-
-    # netuid 1 is the concentrated fixture: scan-all (no concentration penalty)
-    # scores materially higher and the grade flips relative to the single scan.
-    assert all_report.score > single_report.score
-    assert all_report.grade != single_report.grade
-    # ... and that is explicitly disclosed, not silent.
-    assert all_report.metrics["provisional"] is True
-    assert "flip the letter grade" in all_report.metrics["note"]
-    assert single_report.metrics["validator_data"] is True
-    assert "provisional" not in single_report.metrics
+    all_reports = {r.netuid: r for r in scanner.scan()}
+    for netuid, all_row in all_reports.items():
+        single = scanner.scan(netuid)[0]
+        assert single.score == all_row.score, f"netuid {netuid}"
+        assert single.grade == all_row.grade, f"netuid {netuid}"
+        # No provisional machinery remains.
+        assert "provisional" not in all_row.metrics
+        assert "note" not in all_row.metrics
+        # The single scan still carries the richer risk data.
+        assert single.metrics["validator_data"] is True
 
 
 def test_scan_passes_prefetched_pools_without_fetching(mock_client):

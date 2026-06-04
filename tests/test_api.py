@@ -984,3 +984,23 @@ def test_5xx_retry_keeps_short_backoff(monkeypatch):
     finally:
         client.close()
     assert waits and waits[0] < 12.0
+
+
+def test_parse_validator_info_live_dtao_shape_prefers_alpha_stake():
+    """Live mainnet rows (June 2026) carry stake='0' and the real per-subnet
+    stake in alpha_stake — parsing `stake` zeroed every validator, emptying
+    the detail page and stripping concentration from live single scans."""
+    item = {
+        "hotkey": {"ss58": "5DU1dvLive", "hex": "0x0"},
+        "netuid": 64,
+        "uid": 1,
+        "stake": "0",
+        "alpha_stake": "1421263335513345",
+        "validator_trust": "0.99998474097810330358",
+        "active": True,
+        "validator_permit": True,
+    }
+    v = parse_validator_info(item)
+    assert v.stake_tao == pytest.approx(1_421_263.335513345)
+    assert v.vtrust == pytest.approx(0.99998474, rel=1e-6)
+    assert v.active is True

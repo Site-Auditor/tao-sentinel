@@ -406,13 +406,21 @@ def parse_validator_info(item: dict) -> ValidatorInfo:
     """Parse one item from ``/api/metagraph/latest/v1`` into a
     :class:`ValidatorInfo`.
 
-    In the dTAO era a neuron's per-subnet ``stake`` is that subnet's alpha in
-    alpha-RAO -> divide by 1e9. ``validator_trust`` is the vtrust decimal [0,1].
+    In the dTAO era a neuron's per-subnet stake lives in ``alpha_stake``
+    (alpha-RAO -> divide by 1e9); the legacy ``stake`` field is ``"0"`` on
+    live mainnet rows (verified against the production API, June 2026 —
+    parsing it zeroed every validator, which emptied the detail page's
+    validator table and stripped concentration scoring from live
+    single-subnet scans). Prefer ``alpha_stake``, fall back to ``stake``
+    for older shapes. ``validator_trust`` is the vtrust decimal [0,1].
     """
+    stake = rao_to_tao(item.get("alpha_stake"))
+    if not stake:  # None or 0.0 -> legacy field
+        stake = rao_to_tao(item.get("stake")) or 0.0
     return ValidatorInfo(
         hotkey=_ss58(item.get("hotkey")) or "",
         netuid=_to_int(item.get("netuid")) or 0,
-        stake_tao=rao_to_tao(item.get("stake")) or 0.0,
+        stake_tao=stake,
         vtrust=_to_float(item.get("validator_trust")),
         active=_to_bool(item.get("active")),
     )
