@@ -4,6 +4,7 @@ import type { StatusMeta } from "../lib/api";
 import { fmtUsd, timeAgo, sparkChangePct } from "../lib/format";
 import { Sparkline } from "./Sparkline";
 import { Delta } from "./Delta";
+import { BellIcon } from "./icons";
 
 interface TopBarProps {
   meta: StatusMeta | null;
@@ -61,7 +62,7 @@ function TopBarImpl({ meta }: TopBarProps) {
               rel="noopener noreferrer"
               className="shrink-0 flex items-center gap-1.5 text-[11px] uppercase tracking-wide border rounded-full px-2.5 py-0.5 text-accent border-accent/40 hover:bg-accent-dim/40 transition-colors"
             >
-              <span aria-hidden>🔔</span>
+              <BellIcon />
               <span className="hidden min-[420px]:inline whitespace-nowrap">Alerts</span>
             </a>
           </div>

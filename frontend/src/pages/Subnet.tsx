@@ -4,6 +4,7 @@ import { fetchStatus, fetchSubnet } from "../lib/api";
 import type { SubnetDetail } from "../lib/api";
 import { TopBar } from "../components/TopBar";
 import { GradeBadge } from "../components/GradeBadge";
+import { BellIcon } from "../components/icons";
 import { Delta } from "../components/Delta";
 import { PriceChart } from "../components/PriceChart";
 import { fmtTao, fmtPrice, fmtPct, truncAddr } from "../lib/format";
@@ -230,7 +231,7 @@ export default function Subnet() {
             rel="noopener noreferrer"
             className="ml-auto shrink-0 flex items-center gap-1.5 text-[12px] border rounded-full px-3 py-1 text-accent border-accent/40 hover:bg-accent-dim/40 transition-colors"
           >
-            <span aria-hidden>🔔</span>
+            <BellIcon size={14} />
             <span className="whitespace-nowrap">Watch this subnet</span>
           </a>
         </div>
