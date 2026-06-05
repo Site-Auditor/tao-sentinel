@@ -117,7 +117,10 @@ function ValidatorsTable({ detail }: { detail: SubnetDetail }) {
                     </td>
                     <td className="px-3">
                       <div className="flex items-center justify-end gap-2">
-                        <span className="h-1 w-16 rounded bg-surface-3 overflow-hidden">
+                        {/* The bar is a luxury; at 390px it crowds the SHARE
+                            column off the card edge, so the percent carries
+                            the signal alone on phones. */}
+                        <span className="hidden sm:inline-block h-1 w-16 rounded bg-surface-3 overflow-hidden">
                           <span
                             className="block h-full rounded bg-accent"
                             style={{
