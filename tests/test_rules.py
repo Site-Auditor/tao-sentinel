@@ -63,18 +63,14 @@ def make_snapshot(
 
 
 def test_rules_registry_covers_all_watch_types():
-    """The registry maps every supported watch type to its function."""
-    assert set(RULES) == {
-        "price_change",
-        "stake_change",
-        "validator_dereg",
-        "emission_shift",
-        "tao_price",
-        "market_cap",
-        "registration_cost",
-        "new_subnet",
-        "price_trend",
-    }
+    """Every supported watch type maps to a rule function and vice versa.
+
+    Compared against WATCH_TYPES itself (not a hardcoded copy) so adding a
+    type without registering its rule, or vice versa, fails here loudly.
+    """
+    from tao_sentinel.config import WATCH_TYPES
+
+    assert set(RULES) == set(WATCH_TYPES)
     assert RULES["price_change"] is price_change_rule
     assert RULES["stake_change"] is stake_change_rule
     assert RULES["validator_dereg"] is validator_dereg_rule
@@ -582,3 +578,94 @@ def test_price_trend_accepts_int_keyed_history():
 
     assert len(alerts) == 1
     assert alerts[0].severity == "critical"
+
+
+# --------------------------------------------------------------------------- #
+# vtrust_drop / validator_stake_drop (v0.3.0)
+# --------------------------------------------------------------------------- #
+
+from tao_sentinel.alerts.rules import validator_stake_drop_rule, vtrust_drop_rule
+
+
+def _val_v(hotkey: str, netuid: int, stake: float, vtrust: float) -> ValidatorInfo:
+    return ValidatorInfo(
+        hotkey=hotkey, netuid=netuid, stake_tao=stake, vtrust=vtrust, active=True
+    )
+
+
+def test_vtrust_drop_fires_warning_then_critical():
+    """A relative vtrust fall >= threshold warns; >= 2x threshold is critical."""
+    watch = WatchConfig(type="vtrust_drop", netuid=64, threshold_pct=10.0)
+    prev = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.90)]})
+    warn = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.80)]})
+    crit = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.70)]})
+
+    a1 = vtrust_drop_rule(watch, prev, warn)
+    assert len(a1) == 1 and a1[0].severity == "warning"
+    assert a1[0].rule_type == "vtrust_drop"
+
+    a2 = vtrust_drop_rule(watch, prev, crit)
+    assert len(a2) == 1 and a2[0].severity == "critical"
+
+
+def test_vtrust_drop_ignores_rises_and_small_moves():
+    watch = WatchConfig(type="vtrust_drop", netuid=64, threshold_pct=10.0)
+    prev = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.90)]})
+    up = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.99)]})
+    small = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.86)]})
+
+    assert vtrust_drop_rule(watch, prev, up) == []
+    assert vtrust_drop_rule(watch, prev, small) == []
+
+
+def test_vtrust_drop_skips_missing_vtrust():
+    watch = WatchConfig(type="vtrust_drop", netuid=64, threshold_pct=10.0)
+    no_vtrust = ValidatorInfo(hotkey=HOTKEY_A, netuid=64, stake_tao=500.0)
+    prev = make_snapshot(validators={64: [no_vtrust]})
+    now = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.50)]})
+
+    assert vtrust_drop_rule(watch, prev, now) == []
+
+
+def test_vtrust_drop_hotkey_filter():
+    watch = WatchConfig(type="vtrust_drop", netuid=64, hotkey=HOTKEY_A, threshold_pct=10.0)
+    prev = make_snapshot(
+        validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.9), _val_v(HOTKEY_B, 64, 500.0, 0.9)]}
+    )
+    now = make_snapshot(
+        validators={64: [_val_v(HOTKEY_A, 64, 500.0, 0.9), _val_v(HOTKEY_B, 64, 500.0, 0.4)]}
+    )
+
+    assert vtrust_drop_rule(watch, prev, now) == []
+
+
+def test_validator_stake_drop_fires_and_escalates():
+    watch = WatchConfig(type="validator_stake_drop", netuid=64, threshold_pct=10.0)
+    prev = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 10_000.0, 0.9)]})
+    warn = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 8_900.0, 0.9)]})
+    crit = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 7_000.0, 0.9)]})
+
+    a1 = validator_stake_drop_rule(watch, prev, warn)
+    assert len(a1) == 1 and a1[0].severity == "warning"
+
+    a2 = validator_stake_drop_rule(watch, prev, crit)
+    assert len(a2) == 1 and a2[0].severity == "critical"
+
+
+def test_validator_stake_drop_ignores_dust_and_inflows():
+    watch = WatchConfig(type="validator_stake_drop", netuid=64, threshold_pct=10.0)
+    prev = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 0.5, 0.9)]})
+    now = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 0.1, 0.9)]})
+    assert validator_stake_drop_rule(watch, prev, now) == []
+
+    prev2 = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 1_000.0, 0.9)]})
+    up = make_snapshot(validators={64: [_val_v(HOTKEY_A, 64, 2_000.0, 0.9)]})
+    assert validator_stake_drop_rule(watch, prev2, up) == []
+
+
+def test_new_validator_types_require_netuid():
+    import pytest as _pytest
+
+    for t in ("vtrust_drop", "validator_stake_drop"):
+        with _pytest.raises(ValueError, match="requires a netuid"):
+            WatchConfig(type=t)

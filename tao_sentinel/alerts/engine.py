@@ -104,7 +104,7 @@ class WatchEngine:
             elif watch.type == "stake_change":
                 if watch.coldkey:
                     coldkeys.add(watch.coldkey)
-            elif watch.type == "validator_dereg":
+            elif watch.type in ("validator_dereg", "vtrust_drop", "validator_stake_drop"):
                 if watch.netuid is not None:
                     validator_netuids.add(watch.netuid)
             elif watch.type == "emission_shift":

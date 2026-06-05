@@ -35,6 +35,15 @@ _ENV_INDIRECTION_PREFIX = "env:"
 #: * ``registration_cost`` - registration cost DROP by ``threshold_pct``.
 #: * ``new_subnet``        - a netuid that appears in the pool list (netuid optional).
 #: * ``price_trend``       - |change| over the trailing 24h history >= threshold.
+#:
+#: v0.3.0 adds two validator-event types (both reuse the per-netuid validator
+#: source that ``validator_dereg`` already fetches, so they cost no extra API
+#: calls):
+#:
+#: * ``vtrust_drop``          - a validator's trust score falls by
+#:   ``threshold_pct`` percent (relative) between ticks.
+#: * ``validator_stake_drop`` - a validator's stake on the subnet falls by
+#:   ``threshold_pct`` percent between ticks (an unstaking-wave signal).
 WATCH_TYPES = (
     "price_change",
     "stake_change",
@@ -45,16 +54,20 @@ WATCH_TYPES = (
     "registration_cost",
     "new_subnet",
     "price_trend",
+    "vtrust_drop",
+    "validator_stake_drop",
 )
 
 #: Watch types for which ``netuid`` is mandatory. ``price_trend`` fetches a
 #: per-subnet 24h history series, so without a netuid there is nothing to fetch
 #: or evaluate; the engine would silently skip it, so reject it at load time.
+#: The v0.3.0 validator-event types are netuid-scoped by definition and are new,
+#: so they carry no backwards-compat exemption.
 #: The other per-subnet types (``price_change``, ``validator_dereg``,
 #: ``emission_shift``, ``market_cap``) are NOT listed here because their
 #: pre-v0.2.0 behaviour permitted an absent netuid (a config-wide / best-effort
 #: watch), and tightening that retroactively would break existing configs.
-_NETUID_REQUIRED_TYPES = ("price_trend",)
+_NETUID_REQUIRED_TYPES = ("price_trend", "vtrust_drop", "validator_stake_drop")
 
 #: Watch types that never need a netuid (documented for completeness; these are
 #: simply not subject to the requirement above). ``tao_price`` tracks the

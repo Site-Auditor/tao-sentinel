@@ -537,6 +537,95 @@ def price_trend_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
     ]
 
 
+def vtrust_drop_rule(watch: WatchConfig, prev: dict, now: dict) -> list[Alert]:
+    """Fire when a validator's trust score drops by ``threshold_pct`` percent.
+
+    Compares each validator's ``vtrust`` between snapshots (relative change).
+    A falling vtrust precedes lost dividends and, eventually, deregistration,
+    so it is the early-warning counterpart to ``validator_dereg``. If
+    ``watch.hotkey`` is set only that hotkey is considered. Validators without
+    a vtrust value in either snapshot are skipped. Severity escalates to
+    ``critical`` at twice the threshold.
+    """
+    if watch.netuid is None:
+        return []
+
+    prev_by_hotkey = {v.hotkey: v for v in _get_validators(prev, watch.netuid)}
+    alerts: list[Alert] = []
+    for now_val in _get_validators(now, watch.netuid):
+        if watch.hotkey is not None and now_val.hotkey != watch.hotkey:
+            continue
+        prev_val = prev_by_hotkey.get(now_val.hotkey)
+        if (
+            prev_val is None
+            or not prev_val.vtrust
+            or now_val.vtrust is None
+        ):
+            continue
+        change = _pct_change(prev_val.vtrust, now_val.vtrust)
+        if change >= 0 or abs(change) < watch.threshold_pct:
+            continue
+        severity = "critical" if abs(change) >= 2 * watch.threshold_pct else "warning"
+        alerts.append(
+            Alert(
+                rule_type="vtrust_drop",
+                severity=severity,
+                title=f"Validator trust dropped on subnet {watch.netuid}",
+                message=(
+                    f"Validator {now_val.hotkey} vtrust fell "
+                    f"{abs(change):.1f}% ({prev_val.vtrust:.3f} -> "
+                    f"{now_val.vtrust:.3f}) on subnet {watch.netuid}."
+                ),
+                netuid=watch.netuid,
+                timestamp=_now_iso(),
+            )
+        )
+    return alerts
+
+
+def validator_stake_drop_rule(
+    watch: WatchConfig, prev: dict, now: dict
+) -> list[Alert]:
+    """Fire when a validator's stake on the subnet falls by ``threshold_pct``.
+
+    A large single-tick stake outflow from a validator is an unstaking-wave
+    signal for the subnet (delegators leaving, or the validator rebalancing
+    away). If ``watch.hotkey`` is set only that hotkey is considered; tiny
+    stakes (< 1 TAO) are ignored to avoid noise from dust validators.
+    Severity escalates to ``critical`` at twice the threshold.
+    """
+    if watch.netuid is None:
+        return []
+
+    prev_by_hotkey = {v.hotkey: v for v in _get_validators(prev, watch.netuid)}
+    alerts: list[Alert] = []
+    for now_val in _get_validators(now, watch.netuid):
+        if watch.hotkey is not None and now_val.hotkey != watch.hotkey:
+            continue
+        prev_val = prev_by_hotkey.get(now_val.hotkey)
+        if prev_val is None or prev_val.stake_tao < 1.0:
+            continue
+        change = _pct_change(prev_val.stake_tao, now_val.stake_tao)
+        if change >= 0 or abs(change) < watch.threshold_pct:
+            continue
+        severity = "critical" if abs(change) >= 2 * watch.threshold_pct else "warning"
+        alerts.append(
+            Alert(
+                rule_type="validator_stake_drop",
+                severity=severity,
+                title=f"Validator stake outflow on subnet {watch.netuid}",
+                message=(
+                    f"Validator {now_val.hotkey} stake fell {abs(change):.1f}% "
+                    f"({prev_val.stake_tao:,.0f} -> {now_val.stake_tao:,.0f} "
+                    f"alpha) on subnet {watch.netuid}."
+                ),
+                netuid=watch.netuid,
+                timestamp=_now_iso(),
+            )
+        )
+    return alerts
+
+
 # Registry mapping watch ``type`` -> evaluation function.
 RULES: dict[str, RuleFunc] = {
     "price_change": price_change_rule,
@@ -548,4 +637,6 @@ RULES: dict[str, RuleFunc] = {
     "registration_cost": registration_cost_rule,
     "new_subnet": new_subnet_rule,
     "price_trend": price_trend_rule,
+    "vtrust_drop": vtrust_drop_rule,
+    "validator_stake_drop": validator_stake_drop_rule,
 }
