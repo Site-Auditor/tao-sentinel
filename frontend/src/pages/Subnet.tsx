@@ -222,6 +222,17 @@ export default function Subnet() {
             <Delta value={detail.spark_change_pct} />
             <span className="uppercase tracking-wide">24h</span>
           </span>
+          {/* Funnel: drops into the bot's threshold picker for this subnet
+              (the /start payload is handled by the wizard). */}
+          <a
+            href={`https://t.me/TaoSentinelBot?start=watch_${detail.netuid}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto shrink-0 flex items-center gap-1.5 text-[12px] border rounded-full px-3 py-1 text-accent border-accent/40 hover:bg-accent-dim/40 transition-colors"
+          >
+            <span aria-hidden>🔔</span>
+            <span className="whitespace-nowrap">Watch this subnet</span>
+          </a>
         </div>
 
         <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1fr)_340px] gap-6">

@@ -52,6 +52,18 @@ function TopBarImpl({ meta }: TopBarProps) {
             <span className="hidden sm:inline text-ink-faint text-[12px]">
               updated {timeAgo(meta.generated_at)}
             </span>
+
+            {/* Funnel: the bot is the product, the dashboard is the shop
+                window. Short label so the 390px row never overflows. */}
+            <a
+              href="https://t.me/TaoSentinelBot"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 flex items-center gap-1.5 text-[11px] uppercase tracking-wide border rounded-full px-2.5 py-0.5 text-accent border-accent/40 hover:bg-accent-dim/40 transition-colors"
+            >
+              <span aria-hidden>🔔</span>
+              <span className="hidden min-[420px]:inline whitespace-nowrap">Alerts</span>
+            </a>
           </div>
         ) : null}
       </div>
